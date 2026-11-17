@@ -1,0 +1,31 @@
+[package]
+name = "arsenal"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Terminal UI for cataloging, searching, and authoring agent skills, agents, commands, and rules"
+license = "MIT"
+readme = "README.md"
+keywords = ["tui", "agents", "skills", "ratatui", "cli"]
+categories = ["command-line-utilities", "development-tools"]
+
+[dependencies]
+anyhow = "1.0.104"
+base64 = "0.23.1"
+clap = { version = "4", features = ["derive"] }
+crossterm = "0.29"
+fuzzy-matcher = "0.3.7"
+ratatui = "0.30"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1.0.154"
+serde_yaml_ng = "0.10.0"
+toml = "1.2.1"
+unicode-width = "0.2.3"
+walkdir = "2.5.0"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[profile.release]
+lto = "thin"
+strip = "none"

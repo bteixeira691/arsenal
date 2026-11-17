@@ -1,0 +1,844 @@
+//! Rendering: header, asset list, preview, statusline, and modal dialogs.
+
+use ratatui::prelude::*;
+use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Wrap};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+use crate::app::{App, FormField, Mode, TextInput};
+use crate::asset::{format_age, format_size};
+use crate::config::{Level, ResolvedTheme};
+use crate::keys::Action;
+
+const HELP_GROUPS: &[(&str, &[Action])] = &[
+    (
+        "Navigation",
+        &[
+            Action::Down,
+            Action::Up,
+            Action::Top,
+            Action::Bottom,
+            Action::HalfPageDown,
+            Action::HalfPageUp,
+            Action::PageDown,
+            Action::PageUp,
+            Action::PreviewDown,
+            Action::PreviewUp,
+        ],
+    ),
+    (
+        "Actions",
+        &[
+            Action::Create,
+            Action::Edit,
+            Action::Delete,
+            Action::YankPath,
+            Action::Reveal,
+            Action::Rescan,
+            Action::Config,
+        ],
+    ),
+    (
+        "Search & views",
+        &[
+            Action::Search,
+            Action::NextMatch,
+            Action::PrevMatch,
+            Action::FilterAll,
+            Action::FilterSkill,
+            Action::FilterAgent,
+            Action::FilterCommand,
+            Action::FilterRule,
+            Action::FilterSnippet,
+            Action::CycleSort,
+            Action::TogglePreview,
+            Action::CycleTheme,
+        ],
+    ),
+    (
+        "Application",
+        &[Action::Help, Action::Command, Action::Quit],
+    ),
+];
+
+pub fn draw(f: &mut Frame, app: &mut App) {
+    let area = f.area();
+    let theme = app.theme();
+    if area.width < 24 || area.height < 6 {
+        let notice = Paragraph::new(" Terminal too small for arsenal ")
+            .style(Style::new().fg(theme.error))
+            .alignment(Alignment::Center);
+        f.render_widget(notice, area);
+        return;
+    }
+
+    let chunks = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(3),
+        Constraint::Length(1),
+    ])
+    .split(area);
+
+    header(f, chunks[0], app, &theme);
+
+    let body = chunks[1];
+    if app.show_preview && body.width >= 60 {
+        let list_width = app.cfg.layout.list_width.clamp(20, 70).min(80);
+        let [list_area, preview_area] =
+            Layout::horizontal([Constraint::Percentage(list_width), Constraint::Fill(1)])
+                .areas(body);
+        asset_list(f, list_area, app, &theme);
+        preview(f, preview_area, app, &theme);
+    } else {
+        asset_list(f, body, app, &theme);
+    }
+
+    status_bar(f, chunks[2], app, &theme);
+
+    match app.mode {
+        Mode::Form => form_modal(f, area, app, &theme),
+        Mode::Confirm => confirm_modal(f, area, app, &theme),
+        Mode::Help => help_modal(f, area, app, &theme),
+        _ => {}
+    }
+}
+
+fn header(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
+    let right_text = format!("{}/{} assets ", app.filtered.len(), app.assets.len());
+    let right_width = right_text.width() as u16;
+    let [left_area, right_area] =
+        Layout::horizontal([Constraint::Min(10), Constraint::Length(right_width)]).areas(area);
+
+    let filter = match app.kind_filter {
+        Some(kind) => kind.plural(),
+        None => "all kinds",
+    };
+    let pending = if app.pending.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "  [{}]",
+            app.pending
+                .iter()
+                .map(|chord| chord.to_string())
+                .collect::<Vec<_>>()
+                .join(" ")
+        )
+    };
+    let left = Line::from(vec![
+        Span::styled(
+            " ARSENAL ",
+            Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("· ", Style::new().fg(theme.border)),
+        Span::styled(filter.to_string(), Style::new().fg(Color::Reset)),
+        Span::styled(
+            format!("  {}", compact_path(&app.config_path)),
+            Style::new().fg(theme.muted),
+        ),
+        Span::styled(pending, Style::new().fg(theme.warning)),
+    ]);
+    f.render_widget(Paragraph::new(left), left_area);
+
+    let right = Paragraph::new(Line::from(Span::styled(
+        right_text,
+        Style::new().fg(theme.muted),
+    )))
+    .alignment(Alignment::Right);
+    f.render_widget(right, right_area);
+}
+
+fn asset_list(f: &mut Frame, area: Rect, app: &mut App, theme: &ResolvedTheme) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(theme.border))
+        .title(Line::from(vec![
+            Span::styled(
+                " Assets ",
+                Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("{} ", app.filtered.len()),
+                Style::new().fg(theme.muted),
+            ),
+        ]));
+
+    let inner = block.inner(area);
+    app.list_height = inner.height;
+    app.ensure_visible();
+
+    if app.filtered.is_empty() {
+        let query = if app.query.is_empty() {
+            String::new()
+        } else {
+            format!(" for `{}`", app.query)
+        };
+        let kind = match app.kind_filter {
+            Some(kind) => format!(" in {}", kind.plural()),
+            None => String::new(),
+        };
+        let text = vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                format!("  No assets{query}{kind}."),
+                Style::new().fg(theme.muted).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(Span::styled("  a  create", Style::new().fg(theme.muted))),
+            Line::from(Span::styled(
+                "  /  search    0-5  filter kinds",
+                Style::new().fg(theme.muted),
+            )),
+            Line::from(Span::styled(
+                "  g c  configuration    R  rescan",
+                Style::new().fg(theme.muted),
+            )),
+            Line::from(Span::styled(
+                "  ?  keymap help",
+                Style::new().fg(theme.muted),
+            )),
+        ];
+        f.render_widget(Paragraph::new(text).block(block), area);
+        return;
+    }
+
+    let start = app.list_top.min(app.filtered.len());
+    let visible = inner.height as usize;
+    let end = (start + visible).min(app.filtered.len());
+    let inner_width = inner.width as usize;
+    let mut items = Vec::with_capacity(end - start);
+
+    for position in start..end {
+        let asset = &app.assets[app.filtered[position]];
+        let selected = position == app.selected;
+        let badge = format!(" {} ", asset.kind.badge());
+        let available = inner_width.saturating_sub(badge.width() + 4).max(8);
+        let name_budget = (available / 2).max(10);
+        let name = truncate_width(&asset.name, name_budget);
+        let name_width = name.width();
+        let description_budget = available.saturating_sub(name_width);
+        let description = truncate_width(&asset.description, description_budget);
+
+        let mut spans = vec![
+            Span::styled(
+                badge,
+                Style::new()
+                    .fg(theme.kind_color(asset.kind))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                name,
+                Style::new().fg(Color::Reset).add_modifier(Modifier::BOLD),
+            ),
+        ];
+        if !description.is_empty() {
+            spans.push(Span::raw("  "));
+            spans.push(Span::styled(description, Style::new().fg(theme.muted)));
+        }
+        let mut item = ListItem::new(Line::from(spans));
+        if selected {
+            item = item.style(theme.selection);
+        }
+        items.push(item);
+    }
+
+    f.render_widget(List::new(items).block(block), area);
+}
+
+fn preview(f: &mut Frame, area: Rect, app: &mut App, theme: &ResolvedTheme) {
+    let Some(asset) = app.current() else {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::new().fg(theme.border))
+            .title(Span::styled(" Preview ", Style::new().fg(theme.muted)));
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "  Select an asset with j/k",
+                Style::new().fg(theme.muted),
+            )))
+            .block(block),
+            area,
+        );
+        return;
+    };
+
+    let title = truncate_width(&asset.name, area.width.saturating_sub(16) as usize);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(theme.border))
+        .title(Line::from(vec![
+            Span::styled(
+                " Preview ",
+                Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("· ", Style::new().fg(theme.border)),
+            Span::styled(title, Style::new().fg(Color::Reset)),
+        ]));
+    let inner = block.inner(area);
+    let width = inner.width as usize;
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    lines.push(Line::from(Span::styled(
+        asset.name.clone(),
+        Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("{} ", asset.kind.badge()),
+            Style::new()
+                .fg(theme.kind_color(asset.kind))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("{} · {}", asset.kind.as_str(), asset.source),
+            Style::new().fg(theme.muted),
+        ),
+    ]));
+    lines.push(Line::from(Span::styled(
+        asset.path.display().to_string(),
+        Style::new().fg(theme.muted),
+    )));
+    lines.push(Line::from(Span::styled(
+        format!(
+            "{} · {}",
+            format_age(asset.modified),
+            format_size(asset.size)
+        ),
+        Style::new().fg(theme.muted),
+    )));
+
+    if !asset.description.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            asset.description.clone(),
+            Style::new().fg(theme.muted),
+        )));
+    }
+
+    if !asset.tags.is_empty() {
+        lines.push(Line::from(""));
+        let mut tag_spans = vec![Span::styled("tags  ", Style::new().fg(theme.border))];
+        for tag in &asset.tags {
+            tag_spans.push(Span::styled(
+                format!("#{tag} "),
+                Style::new().fg(theme.accent),
+            ));
+        }
+        lines.push(Line::from(tag_spans));
+    }
+
+    let mut metadata: Vec<(&String, &String)> = asset
+        .fields
+        .iter()
+        .filter(|(key, _)| !matches!(key.as_str(), "name" | "description" | "tags" | "keywords"))
+        .collect();
+    metadata.sort_by_key(|(key, _)| key.as_str());
+    if !metadata.is_empty() {
+        lines.push(Line::from(""));
+        for (key, value) in metadata {
+            lines.push(Line::from(vec![
+                Span::styled(format!("{key}: "), Style::new().fg(theme.muted)),
+                Span::raw(truncate_width(value, width.saturating_sub(key.width() + 2))),
+            ]));
+        }
+    }
+
+    lines.push(Line::from(Span::styled(
+        "─".repeat(width.max(1)),
+        Style::new().fg(theme.border),
+    )));
+
+    let body_lines: Vec<&str> = asset.body.lines().collect();
+    let first = body_lines
+        .iter()
+        .position(|line| !line.trim().is_empty())
+        .unwrap_or(body_lines.len());
+    for line in body_lines.iter().skip(first).take(4000) {
+        lines.push(body_line(line, theme));
+    }
+
+    let wrap_width = inner.width.max(1) as usize;
+    let wrapped_rows: usize = lines
+        .iter()
+        .map(|line| {
+            let line_width = line.width();
+            if line_width == 0 {
+                1
+            } else {
+                line_width.div_ceil(wrap_width)
+            }
+        })
+        .sum();
+    app.preview_max_scroll = (wrapped_rows + wrapped_rows / 4 + 2)
+        .saturating_sub(inner.height as usize)
+        .min(u16::MAX as usize) as u16;
+    if app.preview_scroll > app.preview_max_scroll {
+        app.preview_scroll = app.preview_max_scroll;
+    }
+
+    let paragraph = Paragraph::new(Text::from(lines))
+        .block(block)
+        .wrap(Wrap { trim: false })
+        .scroll((app.preview_scroll, 0));
+    f.render_widget(paragraph, area);
+}
+
+fn body_line<'a>(line: &str, theme: &ResolvedTheme) -> Line<'a> {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with('#') {
+        return Line::from(Span::styled(
+            line.to_string(),
+            Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+        ));
+    }
+    if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+        return Line::from(Span::styled(
+            line.to_string(),
+            Style::new().fg(theme.border),
+        ));
+    }
+    if trimmed.starts_with("---") || trimmed.starts_with("***") {
+        return Line::from(Span::styled(
+            line.to_string(),
+            Style::new().fg(theme.border),
+        ));
+    }
+    if trimmed.starts_with('>') {
+        return Line::from(Span::styled(
+            line.to_string(),
+            Style::new().fg(theme.muted).add_modifier(Modifier::ITALIC),
+        ));
+    }
+    Line::from(line.to_string())
+}
+
+fn status_bar(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
+    let status_text = app
+        .status
+        .as_ref()
+        .map(|status| (status.text.clone(), status.level))
+        .or_else(|| {
+            app.current()
+                .map(|asset| (compact_path(&asset.path), Level::Info))
+        })
+        .unwrap_or_else(|| (String::new(), Level::Info));
+    let status_width = (status_text.0.width() as u16 + 1).min(area.width / 2);
+
+    let [left_area, right_area] =
+        Layout::horizontal([Constraint::Min(10), Constraint::Length(status_width)]).areas(area);
+
+    let chip_style = if theme.chip_bg == Color::Reset {
+        Style::new()
+            .fg(theme.chip_fg)
+            .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+    } else {
+        Style::new()
+            .fg(theme.chip_fg)
+            .bg(theme.chip_bg)
+            .add_modifier(Modifier::BOLD)
+    };
+    let mut spans = vec![Span::styled(format!(" {} ", app.mode.label()), chip_style)];
+
+    match app.mode {
+        Mode::Search | Mode::Command => {
+            let prefix = if app.mode == Mode::Search { "/" } else { ":" };
+            spans.push(Span::styled(
+                format!(" {prefix}"),
+                Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+            ));
+            spans.extend(input_spans(&app.input, theme));
+            spans.push(Span::styled(
+                format!("   {}/{}", app.filtered.len(), app.assets.len()),
+                Style::new().fg(theme.muted),
+            ));
+        }
+        Mode::Form => {
+            spans.push(Span::styled(
+                " tab next · ←/→ change · enter create · esc cancel",
+                Style::new().fg(theme.muted),
+            ));
+        }
+        Mode::Confirm => {
+            spans.push(Span::styled(
+                " y delete · n cancel",
+                Style::new().fg(theme.muted),
+            ));
+        }
+        Mode::Help => {
+            spans.push(Span::styled(
+                " j/k scroll · esc close",
+                Style::new().fg(theme.muted),
+            ));
+        }
+        Mode::Normal => {
+            for (keys, label) in [
+                ("/", "search"),
+                ("a", "new"),
+                ("e", "edit"),
+                ("d", "delete"),
+                ("?", "help"),
+            ] {
+                spans.push(Span::styled(
+                    format!("  {keys}"),
+                    Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+                ));
+                spans.push(Span::styled(
+                    format!(" {label}"),
+                    Style::new().fg(theme.muted),
+                ));
+            }
+        }
+    }
+
+    f.render_widget(Paragraph::new(Line::from(spans)), left_area);
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            status_text.0,
+            Style::new().fg(theme.status_color(status_text.1)),
+        )))
+        .alignment(Alignment::Right),
+        right_area,
+    );
+}
+
+fn form_modal(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
+    let Some(form) = &app.form else {
+        return;
+    };
+    let width = (area.width.saturating_sub(4)).min(76);
+    let height = 10.min(area.height.saturating_sub(2));
+    let rect = centered(area, width, height);
+    f.render_widget(Clear, rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(theme.accent))
+        .title(Span::styled(
+            format!(" New {} ", form.kind.as_str()),
+            Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+
+    let label = Style::new().fg(theme.muted);
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    let mut kind_spans = vec![Span::styled(format!("{:<12}", "kind"), label)];
+    let kind_value = if form.focus == FormField::Kind {
+        Span::styled(
+            format!("‹ {} ›", form.kind.as_str()),
+            Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+        )
+    } else {
+        Span::styled(
+            form.kind.as_str().to_string(),
+            Style::new().fg(Color::Reset),
+        )
+    };
+    kind_spans.push(kind_value);
+    lines.push(Line::from(kind_spans));
+
+    lines.push(text_field_line(
+        "name",
+        &form.name,
+        form.focus == FormField::Name,
+        theme,
+    ));
+    lines.push(text_field_line(
+        "description",
+        &form.description,
+        form.focus == FormField::Description,
+        theme,
+    ));
+
+    let mut source_spans = vec![Span::styled(format!("{:<12}", "source"), label)];
+    let source_value = form
+        .source(&app.cfg)
+        .map(|source| source.display())
+        .unwrap_or_else(|| "— no source configured —".to_string());
+    let source_width = inner.width.saturating_sub(13) as usize;
+    let source_value = truncate_width(&source_value, source_width);
+    if form.focus == FormField::Source {
+        source_spans.push(Span::styled(
+            format!("‹ {source_value} ›"),
+            Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+        ));
+    } else {
+        source_spans.push(Span::styled(source_value, Style::new().fg(Color::Reset)));
+    }
+    lines.push(Line::from(source_spans));
+
+    lines.push(Line::from(""));
+    let error = form
+        .error
+        .clone()
+        .unwrap_or_else(|| "enter creates the file; tab cycles fields".into());
+    lines.push(Line::from(Span::styled(
+        error,
+        Style::new()
+            .fg(if form.error.is_some() {
+                theme.error
+            } else {
+                theme.muted
+            })
+            .add_modifier(if form.error.is_some() {
+                Modifier::BOLD
+            } else {
+                Modifier::empty()
+            }),
+    )));
+
+    f.render_widget(Paragraph::new(Text::from(lines)), inner);
+}
+
+fn text_field_line(
+    name: &str,
+    input: &TextInput,
+    focused: bool,
+    theme: &ResolvedTheme,
+) -> Line<'static> {
+    let mut spans = vec![Span::styled(
+        format!("{name:<12}"),
+        Style::new().fg(theme.muted),
+    )];
+    if focused {
+        spans.extend(input_spans(input, theme));
+    } else {
+        let value = if input.value.is_empty() {
+            Span::styled("—", Style::new().fg(theme.border))
+        } else {
+            Span::styled(input.value.clone(), Style::new().fg(Color::Reset))
+        };
+        spans.push(value);
+    }
+    Line::from(spans)
+}
+
+fn input_spans(input: &TextInput, theme: &ResolvedTheme) -> Vec<Span<'static>> {
+    let chars: Vec<char> = input.value.chars().collect();
+    let cursor = input.cursor.min(chars.len());
+    let before: String = chars[..cursor].iter().collect();
+    let mut spans = vec![Span::styled(before, Style::new().fg(Color::Reset))];
+    if cursor < chars.len() {
+        spans.push(Span::styled(
+            chars[cursor].to_string(),
+            Style::new()
+                .fg(theme.accent)
+                .add_modifier(Modifier::REVERSED),
+        ));
+        let after: String = chars[cursor + 1..].iter().collect();
+        spans.push(Span::styled(after, Style::new().fg(Color::Reset)));
+    } else {
+        spans.push(Span::styled(
+            " ",
+            Style::new()
+                .fg(theme.accent)
+                .add_modifier(Modifier::REVERSED),
+        ));
+    }
+    spans
+}
+
+fn confirm_modal(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
+    let Some(confirm) = &app.confirm else {
+        return;
+    };
+    let width = (area.width.saturating_sub(4)).min(64);
+    let height = 9.min(area.height.saturating_sub(2));
+    let rect = centered(area, width, height);
+    f.render_widget(Clear, rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(theme.warning))
+        .title(Span::styled(
+            " Delete asset ",
+            Style::new().fg(theme.warning).add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+
+    let lines = vec![
+        Line::from(Span::styled(
+            format!("Delete `{}`?", confirm.label),
+            Style::new().fg(Color::Reset).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            truncate_width(&confirm.path.display().to_string(), inner.width as usize),
+            Style::new().fg(theme.muted),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                " y ",
+                Style::new().fg(theme.error).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("delete", Style::new().fg(theme.muted)),
+            Span::styled(
+                "    n ",
+                Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("cancel", Style::new().fg(theme.muted)),
+        ]),
+        Line::from(Span::styled(
+            if app.cfg.behavior.trash {
+                "moves the file to the arsenal trash directory"
+            } else {
+                "behavior.trash = false: this unlinks the file"
+            },
+            Style::new().fg(theme.muted),
+        )),
+    ];
+    f.render_widget(Paragraph::new(Text::from(lines)), inner);
+}
+
+fn help_modal(f: &mut Frame, area: Rect, app: &mut App, theme: &ResolvedTheme) {
+    let width = (area.width.saturating_sub(4)).min(78);
+    let height = (area.height.saturating_sub(2)).min(30);
+    let rect = centered(area, width, height);
+    f.render_widget(Clear, rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(theme.accent))
+        .title(Span::styled(
+            " Keymap & commands · j/k scroll ",
+            Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for (title, actions) in HELP_GROUPS {
+        lines.push(Line::from(Span::styled(
+            format!(" {title}"),
+            Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+        )));
+        for action in actions.iter() {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("   {:<14}", app.keys.display_or_dash(*action)),
+                    Style::new().fg(Color::Reset),
+                ),
+                Span::styled(action.label(), Style::new().fg(theme.muted)),
+            ]));
+        }
+        lines.push(Line::from(""));
+    }
+
+    lines.push(Line::from(Span::styled(
+        " Commands",
+        Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+    )));
+    for command in [
+        ":new <kind>        create a skill, agent, command, rule, or snippet",
+        ":filter <kind|all> restrict the list",
+        ":sort <mode>       kind | name | modified | path",
+        ":theme <preset>    dark | light | mono",
+        ":edit  :delete  :yank  :reveal  :rescan  :config  :warnings  :quit",
+    ] {
+        lines.push(Line::from(Span::styled(
+            format!("   {command}"),
+            Style::new().fg(theme.muted),
+        )));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled(" config  ", Style::new().fg(theme.border)),
+        Span::styled(
+            app.config_path.display().to_string(),
+            Style::new().fg(theme.muted),
+        ),
+    ]));
+    if app.warnings.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled(" warnings  ", Style::new().fg(theme.border)),
+            Span::styled("none", Style::new().fg(theme.success)),
+        ]));
+    } else {
+        for warning in app.warnings.iter().take(6) {
+            lines.push(Line::from(vec![
+                Span::styled(" warning  ", Style::new().fg(theme.warning)),
+                Span::styled(
+                    truncate_width(warning, inner.width.saturating_sub(14) as usize),
+                    Style::new().fg(theme.muted),
+                ),
+            ]));
+        }
+        if app.warnings.len() > 6 {
+            lines.push(Line::from(Span::styled(
+                format!(" … {} more", app.warnings.len() - 6),
+                Style::new().fg(theme.muted),
+            )));
+        }
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        " esc close · j/k scroll",
+        Style::new().fg(theme.border),
+    )));
+
+    let max_scroll = lines
+        .len()
+        .saturating_sub(inner.height as usize)
+        .min(u16::MAX as usize) as u16;
+    if app.help_scroll == u16::MAX || app.help_scroll > max_scroll {
+        app.help_scroll = max_scroll;
+    }
+
+    f.render_widget(
+        Paragraph::new(Text::from(lines))
+            .scroll((app.help_scroll, 0))
+            .wrap(Wrap { trim: false }),
+        inner,
+    );
+}
+
+fn centered(area: Rect, width: u16, height: u16) -> Rect {
+    let width = width.min(area.width);
+    let height = height.min(area.height);
+    Rect {
+        x: area.x + (area.width - width) / 2,
+        y: area.y + (area.height - height) / 2,
+        width,
+        height,
+    }
+}
+
+fn truncate_width(text: &str, max: usize) -> String {
+    if max == 0 {
+        return String::new();
+    }
+    if text.width() <= max {
+        return text.to_string();
+    }
+    let mut out = String::new();
+    let mut used = 0;
+    for ch in text.chars() {
+        let width = ch.width().unwrap_or(0);
+        if used + width + 1 > max {
+            break;
+        }
+        out.push(ch);
+        used += width;
+    }
+    out.push('…');
+    out
+}
+
+fn compact_path(path: &std::path::Path) -> String {
+    let text = path.display().to_string();
+    let home = crate::config::home_dir().display().to_string();
+    if !home.is_empty() && text.starts_with(&home) {
+        format!("~{}", &text[home.len()..])
+    } else {
+        text
+    }
+}

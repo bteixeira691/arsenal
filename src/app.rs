@@ -1,0 +1,1253 @@
+//! Application state, modal editors, and the event-to-action layer.
+
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use fuzzy_matcher::skim::SkimMatcherV2;
+
+use crate::asset::{self, Asset, CreateError, Kind};
+use crate::config::{self, Config, Level, Source};
+use crate::keys::{Action, Chord, Keymap, Resolution};
+use crate::search::{self, SortMode};
+
+const STATUS_TTL: Duration = Duration::from_secs(8);
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Mode {
+    Normal,
+    Search,
+    Command,
+    Form,
+    Confirm,
+    Help,
+}
+
+impl Mode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Mode::Normal => "NORMAL",
+            Mode::Search => "SEARCH",
+            Mode::Command => "COMMAND",
+            Mode::Form => "FORM",
+            Mode::Confirm => "CONFIRM",
+            Mode::Help => "HELP",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct TextInput {
+    pub value: String,
+    pub cursor: usize,
+}
+
+impl TextInput {
+    pub fn set(&mut self, value: &str) {
+        self.value = value.to_string();
+        self.cursor = self.value.chars().count();
+    }
+
+    pub fn clear(&mut self) {
+        self.value.clear();
+        self.cursor = 0;
+    }
+
+    fn len(&self) -> usize {
+        self.value.chars().count()
+    }
+
+    fn insert(&mut self, ch: char) {
+        let byte = char_to_byte(&self.value, self.cursor);
+        self.value.insert(byte, ch);
+        self.cursor += 1;
+    }
+
+    fn insert_str(&mut self, text: &str) {
+        for ch in text.chars() {
+            self.insert(ch);
+        }
+    }
+
+    fn backspace(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+        let end = char_to_byte(&self.value, self.cursor);
+        let start = char_to_byte(&self.value, self.cursor - 1);
+        self.value.replace_range(start..end, "");
+        self.cursor -= 1;
+    }
+
+    fn delete(&mut self) {
+        if self.cursor >= self.len() {
+            return;
+        }
+        let start = char_to_byte(&self.value, self.cursor);
+        let end = char_to_byte(&self.value, self.cursor + 1);
+        self.value.replace_range(start..end, "");
+    }
+
+    fn left(&mut self) {
+        self.cursor = self.cursor.saturating_sub(1);
+    }
+
+    fn right(&mut self) {
+        self.cursor = (self.cursor + 1).min(self.len());
+    }
+
+    fn home(&mut self) {
+        self.cursor = 0;
+    }
+
+    fn end(&mut self) {
+        self.cursor = self.len();
+    }
+}
+
+fn paths_equal(a: &Path, b: &Path) -> bool {
+    if a == b {
+        return true;
+    }
+    match (fs::canonicalize(a), fs::canonicalize(b)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
+}
+
+fn char_to_byte(text: &str, char_index: usize) -> usize {
+    text.char_indices()
+        .nth(char_index)
+        .map(|(byte, _)| byte)
+        .unwrap_or(text.len())
+}
+
+/// Apply editing keys to a text input. Returns whether the value changed.
+fn edit_input(input: &mut TextInput, key: &KeyEvent) -> bool {
+    let before = input.value.clone();
+    match key.code {
+        KeyCode::Backspace => input.backspace(),
+        KeyCode::Delete => input.delete(),
+        KeyCode::Left => input.left(),
+        KeyCode::Right => input.right(),
+        KeyCode::Home => input.home(),
+        KeyCode::End => input.end(),
+        KeyCode::Char(ch)
+            if !key.modifiers.contains(KeyModifiers::CONTROL)
+                && !key.modifiers.contains(KeyModifiers::ALT)
+                && !ch.is_control() =>
+        {
+            input.insert(ch);
+        }
+        _ => {}
+    }
+    input.value != before
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FormField {
+    Kind,
+    Name,
+    Description,
+    Source,
+    Submit,
+}
+
+impl FormField {
+    fn next(self) -> Self {
+        match self {
+            FormField::Kind => FormField::Name,
+            FormField::Name => FormField::Description,
+            FormField::Description => FormField::Source,
+            FormField::Source => FormField::Submit,
+            FormField::Submit => FormField::Kind,
+        }
+    }
+
+    fn prev(self) -> Self {
+        match self {
+            FormField::Kind => FormField::Submit,
+            FormField::Name => FormField::Kind,
+            FormField::Description => FormField::Name,
+            FormField::Source => FormField::Description,
+            FormField::Submit => FormField::Source,
+        }
+    }
+
+    fn is_choice(self) -> bool {
+        matches!(self, FormField::Kind | FormField::Source)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Form {
+    pub kind: Kind,
+    pub name: TextInput,
+    pub description: TextInput,
+    pub source_options: Vec<usize>,
+    pub source_pos: usize,
+    pub focus: FormField,
+    pub error: Option<String>,
+}
+
+impl Form {
+    pub fn new(cfg: &Config, kind: Kind) -> Self {
+        let mut form = Form {
+            kind,
+            name: TextInput::default(),
+            description: TextInput::default(),
+            source_options: Vec::new(),
+            source_pos: 0,
+            focus: FormField::Name,
+            error: None,
+        };
+        form.rebuild_sources(cfg, None);
+        form
+    }
+
+    fn rebuild_sources(&mut self, cfg: &Config, preferred: Option<&str>) {
+        self.source_options = cfg
+            .sources
+            .iter()
+            .enumerate()
+            .filter(|(_, source)| source.kind == self.kind)
+            .map(|(index, _)| index)
+            .collect();
+        self.source_pos = preferred
+            .and_then(|path| {
+                self.source_options
+                    .iter()
+                    .position(|&index| cfg.sources[index].path == path)
+            })
+            .unwrap_or(0);
+    }
+
+    pub fn source<'a>(&self, cfg: &'a Config) -> Option<&'a Source> {
+        self.source_options
+            .get(self.source_pos)
+            .map(|&index| &cfg.sources[index])
+    }
+
+    fn cycle(&mut self, cfg: &Config, delta: i32) {
+        match self.focus {
+            FormField::Kind => {
+                let preferred = self.source(cfg).map(|source| source.path.clone());
+                let next = (self.kind.index() as i32 + delta).rem_euclid(Kind::ALL.len() as i32);
+                self.kind = Kind::ALL[next as usize];
+                self.rebuild_sources(cfg, preferred.as_deref());
+            }
+            FormField::Source => {
+                let len = self.source_options.len();
+                if len > 0 {
+                    let next = (self.source_pos as i32 + delta).rem_euclid(len as i32);
+                    self.source_pos = next as usize;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Confirm {
+    pub path: PathBuf,
+    pub label: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct Status {
+    pub text: String,
+    pub level: Level,
+    pub at: Instant,
+}
+
+#[derive(Clone, Debug)]
+pub enum Effect {
+    EditAsset { path: PathBuf, line: usize },
+    EditConfig,
+    Reveal(PathBuf),
+}
+
+pub struct App {
+    pub cfg: Config,
+    pub config_path: PathBuf,
+    pub assets: Vec<Asset>,
+    pub filtered: Vec<usize>,
+    pub selected: usize,
+    pub query: String,
+    pub kind_filter: Option<Kind>,
+    pub sort: SortMode,
+    pub mode: Mode,
+    pub input: TextInput,
+    pub form: Option<Form>,
+    pub confirm: Option<Confirm>,
+    pub help_scroll: u16,
+    pub preview_scroll: u16,
+    pub preview_max_scroll: u16,
+    pub show_preview: bool,
+    pub theme_preset_override: Option<String>,
+    pub keys: Keymap,
+    pub pending: Vec<Chord>,
+    pending_at: Instant,
+    pub status: Option<Status>,
+    pub warnings: Vec<String>,
+    static_warnings: Vec<String>,
+    pub effects: Vec<Effect>,
+    pub copy: Option<String>,
+    pub quit: bool,
+    pub list_height: u16,
+    pub list_top: usize,
+    pub active_sources: usize,
+    pub data_dir: PathBuf,
+    search_backup: String,
+    matcher: SkimMatcherV2,
+}
+
+impl App {
+    pub fn new(
+        cfg: Config,
+        config_path: PathBuf,
+        mut warnings: Vec<String>,
+        query: String,
+    ) -> Self {
+        let (keys, key_warnings) = Keymap::from_map(&cfg.keys);
+        warnings.extend(key_warnings);
+        let static_warnings = warnings.clone();
+        let show_preview = cfg.layout.show_preview;
+        let data_dir = config::data_dir();
+        let mut app = App {
+            cfg,
+            config_path,
+            assets: Vec::new(),
+            filtered: Vec::new(),
+            selected: 0,
+            query: String::new(),
+            kind_filter: None,
+            sort: SortMode::Kind,
+            mode: Mode::Normal,
+            input: TextInput::default(),
+            form: None,
+            confirm: None,
+            help_scroll: 0,
+            preview_scroll: 0,
+            preview_max_scroll: 0,
+            show_preview,
+            theme_preset_override: None,
+            keys,
+            pending: Vec::new(),
+            pending_at: Instant::now(),
+            status: None,
+            warnings,
+            static_warnings,
+            effects: Vec::new(),
+            copy: None,
+            quit: false,
+            list_height: 10,
+            list_top: 0,
+            active_sources: 0,
+            data_dir,
+            search_backup: String::new(),
+            matcher: SkimMatcherV2::default(),
+        };
+        app.reload(false);
+        app.query = query;
+        app.recompute();
+        if !app.warnings.is_empty() {
+            app.set_status(
+                format!(
+                    "{} configuration/scan warning(s) — press ? for details",
+                    app.warnings.len()
+                ),
+                Level::Warning,
+            );
+        }
+        app
+    }
+
+    pub fn theme(&self) -> config::ResolvedTheme {
+        let mut spec = self.cfg.theme.clone();
+        if let Some(preset) = &self.theme_preset_override {
+            spec.preset = preset.clone();
+        }
+        config::ResolvedTheme::from_spec(&spec)
+    }
+
+    pub fn current(&self) -> Option<&Asset> {
+        self.filtered
+            .get(self.selected)
+            .and_then(|&index| self.assets.get(index))
+    }
+
+    pub fn current_path(&self) -> Option<PathBuf> {
+        self.current().map(|asset| asset.path.clone())
+    }
+
+    pub fn set_status(&mut self, text: impl Into<String>, level: Level) {
+        self.status = Some(Status {
+            text: text.into(),
+            level,
+            at: Instant::now(),
+        });
+    }
+
+    pub fn tick(&mut self) {
+        if let Some(status) = &self.status
+            && status.at.elapsed() > STATUS_TTL
+        {
+            self.status = None;
+        }
+    }
+
+    fn reload(&mut self, remember_selection: bool) {
+        let previous = if remember_selection {
+            self.current_path()
+        } else {
+            None
+        };
+        let report = asset::scan(&self.cfg.sources, &self.cfg.behavior);
+        self.assets = report.assets;
+        self.active_sources = report.active_sources;
+        self.warnings = self.static_warnings.clone();
+        self.warnings.extend(report.warnings);
+        self.recompute();
+        if let Some(path) = previous {
+            self.select_path(&path);
+        }
+    }
+
+    fn recompute(&mut self) {
+        let previous = self.current_path();
+        self.filtered = search::select(
+            &self.assets,
+            self.kind_filter,
+            &self.query,
+            self.sort,
+            &self.matcher,
+        );
+        if self.filtered.len() <= self.selected {
+            self.selected = self.filtered.len().saturating_sub(1);
+        }
+        if self.current_path() != previous {
+            self.preview_scroll = 0;
+        }
+        self.ensure_visible();
+    }
+
+    /// Keep the selected row inside the visible viewport.
+    pub fn ensure_visible(&mut self) {
+        if self.filtered.is_empty() {
+            self.list_top = 0;
+            return;
+        }
+        let height = self.list_height.max(1) as usize;
+        if self.selected < self.list_top {
+            self.list_top = self.selected;
+        }
+        if self.selected >= self.list_top + height {
+            self.list_top = self.selected + 1 - height;
+        }
+        let max_top = self.filtered.len().saturating_sub(height);
+        self.list_top = self.list_top.min(max_top).min(self.selected);
+    }
+
+    fn select_path(&mut self, path: &Path) {
+        if let Some(position) = self
+            .filtered
+            .iter()
+            .position(|&index| paths_equal(&self.assets[index].path, path))
+        {
+            self.selected = position;
+            self.preview_scroll = 0;
+            self.ensure_visible();
+        }
+    }
+
+    fn move_selection(&mut self, delta: i32, wrap: bool) {
+        let len = self.filtered.len();
+        if len == 0 {
+            self.selected = 0;
+            return;
+        }
+        let current = self.selected.min(len - 1) as i32;
+        let mut next = current + delta;
+        next = if wrap {
+            next.rem_euclid(len as i32)
+        } else {
+            next.clamp(0, len as i32 - 1)
+        };
+        if next as usize != self.selected {
+            self.selected = next as usize;
+            self.preview_scroll = 0;
+            self.ensure_visible();
+        }
+    }
+
+    fn half_page(&mut self, delta: i32) {
+        let step = (self.list_height / 2).max(1) as i32;
+        self.move_selection(delta * step, false);
+    }
+
+    fn page(&mut self, delta: i32) {
+        let step = self.list_height.saturating_sub(1).max(1) as i32;
+        self.move_selection(delta * step, false);
+    }
+
+    fn set_kind_filter(&mut self, kind: Option<Kind>) {
+        self.kind_filter = kind;
+        self.selected = 0;
+        self.list_top = 0;
+        self.recompute();
+    }
+
+    fn open_form(&mut self, kind: Kind) {
+        self.form = Some(Form::new(&self.cfg, kind));
+        self.mode = Mode::Form;
+        self.input.clear();
+    }
+
+    pub fn on_key(&mut self, key: KeyEvent) {
+        if key.kind == KeyEventKind::Release {
+            return;
+        }
+        if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c')) {
+            self.quit = true;
+            return;
+        }
+        match self.mode {
+            Mode::Normal => self.on_normal(key),
+            Mode::Search => self.on_search(key),
+            Mode::Command => self.on_command(key),
+            Mode::Form => self.on_form(key),
+            Mode::Confirm => self.on_confirm(key),
+            Mode::Help => self.on_help(key),
+        }
+    }
+
+    pub fn on_paste(&mut self, text: &str) {
+        let clean: String = text.chars().filter(|ch| !ch.is_control()).collect();
+        match self.mode {
+            Mode::Search => {
+                self.input.insert_str(&clean);
+                self.query = self.input.value.clone();
+                self.recompute();
+            }
+            Mode::Command => self.input.insert_str(&clean),
+            Mode::Form => {
+                let Some(mut form) = self.form.take() else {
+                    return;
+                };
+                match form.focus {
+                    FormField::Name => form.name.insert_str(&clean),
+                    FormField::Description => form.description.insert_str(&clean),
+                    _ => {}
+                }
+                self.form = Some(form);
+            }
+            _ => {}
+        }
+    }
+
+    fn on_normal(&mut self, key: KeyEvent) {
+        if key.code == KeyCode::Esc {
+            self.pending.clear();
+            if !self.query.is_empty() {
+                self.query.clear();
+                self.recompute();
+            }
+            return;
+        }
+        let Some(chord) = Chord::from_event(key) else {
+            return;
+        };
+        if !self.pending.is_empty() && self.pending_at.elapsed() > Duration::from_secs(1) {
+            self.pending.clear();
+        }
+        self.pending.push(chord);
+        self.pending_at = Instant::now();
+        match self.keys.resolve(&self.pending) {
+            Resolution::Matched(action) => {
+                self.pending.clear();
+                self.run_action(action);
+            }
+            Resolution::Prefix => {
+                if self.pending.len() > 3 {
+                    self.pending.clear();
+                }
+            }
+            Resolution::Unmatched => self.pending.clear(),
+        }
+    }
+
+    fn on_search(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.query = self.search_backup.clone();
+                self.input.set(&self.query);
+                self.recompute();
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Enter => {
+                self.query = self.input.value.clone();
+                self.recompute();
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Up => self.move_selection(-1, false),
+            KeyCode::Down => self.move_selection(1, false),
+            _ => {
+                if edit_input(&mut self.input, &key) {
+                    self.query = self.input.value.clone();
+                    self.recompute();
+                }
+            }
+        }
+    }
+
+    fn on_command(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+                self.input.clear();
+            }
+            KeyCode::Enter => {
+                let line = self.input.value.clone();
+                self.input.clear();
+                self.mode = Mode::Normal;
+                self.run_command(&line);
+            }
+            _ => {
+                edit_input(&mut self.input, &key);
+            }
+        }
+    }
+
+    fn on_form(&mut self, key: KeyEvent) {
+        let Some(mut form) = self.form.take() else {
+            self.mode = Mode::Normal;
+            return;
+        };
+        match key.code {
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+                return;
+            }
+            KeyCode::Enter => {
+                self.form = Some(form);
+                self.submit_form();
+                return;
+            }
+            KeyCode::Tab => form.focus = form.focus.next(),
+            KeyCode::BackTab => form.focus = form.focus.prev(),
+            KeyCode::Left | KeyCode::Up if form.focus.is_choice() => form.cycle(&self.cfg, -1),
+            KeyCode::Right | KeyCode::Down if form.focus.is_choice() => form.cycle(&self.cfg, 1),
+            _ => match form.focus {
+                FormField::Name => {
+                    edit_input(&mut form.name, &key);
+                }
+                FormField::Description => {
+                    edit_input(&mut form.description, &key);
+                }
+                _ => {}
+            },
+        }
+        self.form = Some(form);
+    }
+
+    fn on_confirm(&mut self, key: KeyEvent) {
+        let action = match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => true,
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc | KeyCode::Char('q') => false,
+            _ => return,
+        };
+        let Some(confirm) = self.confirm.take() else {
+            self.mode = Mode::Normal;
+            return;
+        };
+        self.mode = Mode::Normal;
+        if action {
+            self.perform_delete(&confirm.path, &confirm.label);
+        }
+    }
+
+    fn on_help(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {
+                self.mode = Mode::Normal;
+                self.help_scroll = 0;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.help_scroll = self.help_scroll.saturating_add(1);
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.help_scroll = self.help_scroll.saturating_sub(1);
+            }
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.help_scroll = self.help_scroll.saturating_add(5);
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.help_scroll = self.help_scroll.saturating_sub(5);
+            }
+            KeyCode::PageDown | KeyCode::Char(' ') => {
+                self.help_scroll = self.help_scroll.saturating_add(10);
+            }
+            KeyCode::PageUp => {
+                self.help_scroll = self.help_scroll.saturating_sub(10);
+            }
+            KeyCode::Char('g') | KeyCode::Home => self.help_scroll = 0,
+            KeyCode::Char('G') | KeyCode::End => self.help_scroll = u16::MAX,
+            _ => {}
+        }
+    }
+
+    fn run_action(&mut self, action: Action) {
+        match action {
+            Action::Quit => self.quit = true,
+            Action::Help => {
+                self.mode = Mode::Help;
+                self.help_scroll = 0;
+            }
+            Action::Command => {
+                self.mode = Mode::Command;
+                self.input.clear();
+            }
+            Action::Search => {
+                self.mode = Mode::Search;
+                self.search_backup = self.query.clone();
+                self.input.set(&self.query);
+            }
+            Action::NextMatch => self.move_selection(1, true),
+            Action::PrevMatch => self.move_selection(-1, true),
+            Action::Create => {
+                let kind = self.kind_filter.unwrap_or(Kind::Skill);
+                self.open_form(kind);
+            }
+            Action::Edit => {
+                if let Some(asset) = self.current() {
+                    self.effects.push(Effect::EditAsset {
+                        path: asset.path.clone(),
+                        line: 1,
+                    });
+                }
+            }
+            Action::Delete => {
+                if let Some(asset) = self.current() {
+                    let path = asset.path.clone();
+                    let label = asset.name.clone();
+                    if self.cfg.behavior.confirm_delete {
+                        self.confirm = Some(Confirm { path, label });
+                        self.mode = Mode::Confirm;
+                    } else {
+                        self.perform_delete(&path, &label);
+                    }
+                }
+            }
+            Action::YankPath => {
+                if let Some(path) = self.current_path() {
+                    self.copy = Some(path.display().to_string());
+                }
+            }
+            Action::Reveal => {
+                if let Some(path) = self.current_path() {
+                    self.effects.push(Effect::Reveal(path));
+                }
+            }
+            Action::Rescan => {
+                self.reload(true);
+                let level = if self.warnings.is_empty() {
+                    Level::Success
+                } else {
+                    Level::Warning
+                };
+                self.set_status(
+                    format!(
+                        "Scanned {} asset(s) from {} source(s){}",
+                        self.assets.len(),
+                        self.active_sources,
+                        if self.warnings.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" · {} warning(s)", self.warnings.len())
+                        }
+                    ),
+                    level,
+                );
+            }
+            Action::Config => self.effects.push(Effect::EditConfig),
+            Action::Down => self.move_selection(1, false),
+            Action::Up => self.move_selection(-1, false),
+            Action::Top => {
+                self.selected = 0;
+                self.preview_scroll = 0;
+                self.ensure_visible();
+            }
+            Action::Bottom => {
+                self.selected = self.filtered.len().saturating_sub(1);
+                self.preview_scroll = 0;
+                self.ensure_visible();
+            }
+            Action::HalfPageDown => self.half_page(1),
+            Action::HalfPageUp => self.half_page(-1),
+            Action::PageDown => self.page(1),
+            Action::PageUp => self.page(-1),
+            Action::PreviewDown => {
+                self.preview_scroll = self
+                    .preview_scroll
+                    .saturating_add(1)
+                    .min(self.preview_max_scroll);
+            }
+            Action::PreviewUp => {
+                self.preview_scroll = self.preview_scroll.saturating_sub(1);
+            }
+            Action::TogglePreview => {
+                self.show_preview = !self.show_preview;
+                self.set_status(
+                    format!(
+                        "Preview {}",
+                        if self.show_preview { "shown" } else { "hidden" }
+                    ),
+                    Level::Info,
+                );
+            }
+            Action::CycleTheme => {
+                const PRESETS: [&str; 3] = ["dark", "light", "mono"];
+                let current = self
+                    .theme_preset_override
+                    .clone()
+                    .unwrap_or_else(|| self.cfg.theme.preset.clone());
+                let next = PRESETS
+                    .iter()
+                    .position(|preset| *preset == current)
+                    .map(|index| (index + 1) % PRESETS.len())
+                    .unwrap_or(0);
+                self.theme_preset_override = Some(PRESETS[next].to_string());
+                self.set_status(format!("Theme: {}", PRESETS[next]), Level::Info);
+            }
+            Action::CycleSort => {
+                self.sort = self.sort.next();
+                self.recompute();
+                self.set_status(format!("Sort: {}", self.sort.label()), Level::Info);
+            }
+            Action::FilterAll => self.set_kind_filter(None),
+            Action::FilterSkill => self.set_kind_filter(Some(Kind::Skill)),
+            Action::FilterAgent => self.set_kind_filter(Some(Kind::Agent)),
+            Action::FilterCommand => self.set_kind_filter(Some(Kind::Command)),
+            Action::FilterRule => self.set_kind_filter(Some(Kind::Rule)),
+            Action::FilterSnippet => self.set_kind_filter(Some(Kind::Snippet)),
+        }
+    }
+
+    fn submit_form(&mut self) {
+        let Some(mut form) = self.form.take() else {
+            return;
+        };
+        form.error = None;
+        if let Err(message) = asset::validate_name(&form.name.value) {
+            form.error = Some(message);
+            form.focus = FormField::Name;
+            self.form = Some(form);
+            return;
+        }
+        if form.description.value.trim().is_empty() {
+            form.error = Some("description is required".into());
+            form.focus = FormField::Description;
+            self.form = Some(form);
+            return;
+        }
+        let Some(source) = form.source(&self.cfg).cloned() else {
+            form.error = Some(format!(
+                "No source configured for {}s. Add a [[sources]] entry with kind = \"{}\".",
+                form.kind.plural(),
+                form.kind.as_str()
+            ));
+            form.focus = FormField::Source;
+            self.form = Some(form);
+            return;
+        };
+        let name = form.name.value.trim().to_string();
+        let description = form.description.value.trim().to_string();
+        match asset::create_asset(&source, form.kind, &name, &description) {
+            Ok(path) => {
+                let kind = form.kind;
+                self.mode = Mode::Normal;
+                self.reload(false);
+                self.select_path(&path);
+                let visible = self
+                    .current()
+                    .map(|asset| paths_equal(&asset.path, &path))
+                    .unwrap_or(false);
+                if !visible {
+                    self.query.clear();
+                    self.kind_filter = None;
+                    self.recompute();
+                    self.select_path(&path);
+                }
+                self.set_status(
+                    format!("Created {} {}", kind.as_str(), path.display()),
+                    Level::Success,
+                );
+            }
+            Err(CreateError::Exists(path)) => {
+                form.error = Some(format!("{} already exists", path.display()));
+                form.focus = FormField::Name;
+                self.form = Some(form);
+            }
+            Err(error) => {
+                form.error = Some(error.to_string());
+                self.form = Some(form);
+            }
+        }
+    }
+
+    fn perform_delete(&mut self, path: &Path, label: &str) {
+        let result = if self.cfg.behavior.trash {
+            asset::trash_file(path, &self.data_dir).map(Some)
+        } else {
+            fs::remove_file(path)
+                .map(|()| None)
+                .map_err(|error| error.to_string())
+        };
+        match result {
+            Ok(trashed) => {
+                let previous = self.selected;
+                self.reload(false);
+                self.selected = previous.min(self.filtered.len().saturating_sub(1));
+                self.preview_scroll = 0;
+                let suffix = trashed
+                    .map(|target| format!(" (trash: {})", target.display()))
+                    .unwrap_or_default();
+                self.set_status(format!("Deleted {label}{suffix}"), Level::Success);
+            }
+            Err(error) => self.set_status(format!("Delete failed: {error}"), Level::Error),
+        }
+    }
+
+    pub fn run_command(&mut self, line: &str) {
+        let line = line.trim();
+        if line.is_empty() {
+            return;
+        }
+        let mut parts = line.split_whitespace();
+        let command = parts.next().unwrap_or_default();
+        let argument = parts.next();
+        match command {
+            "q" | "q!" | "quit" | "quit!" | "qa" | "qa!" | "exit" => self.quit = true,
+            "w" | "write" | "rescan" | "reload" => self.run_action(Action::Rescan),
+            "new" | "create" | "add" => {
+                let kind = match argument {
+                    Some(value) => {
+                        match Kind::parse_loose(value) {
+                            Some(kind) => kind,
+                            None => {
+                                self.set_status(
+                                format!("Unknown kind `{value}` (skill, agent, command, rule, snippet)"),
+                                Level::Error,
+                            );
+                                return;
+                            }
+                        }
+                    }
+                    None => self.kind_filter.unwrap_or(Kind::Skill),
+                };
+                self.open_form(kind);
+            }
+            "edit" | "e" => self.run_action(Action::Edit),
+            "delete" | "del" | "rm" => self.run_action(Action::Delete),
+            "yank" | "copy" => self.run_action(Action::YankPath),
+            "reveal" | "open" => self.run_action(Action::Reveal),
+            "config" | "settings" => self.effects.push(Effect::EditConfig),
+            "help" | "h" => self.run_action(Action::Help),
+            "sort" | "order" => match argument.and_then(SortMode::parse) {
+                Some(mode) => {
+                    self.sort = mode;
+                    self.recompute();
+                    self.set_status(format!("Sort: {}", mode.label()), Level::Info);
+                }
+                None => self.set_status("Usage: :sort kind|name|modified|path", Level::Error),
+            },
+            "filter" | "kind" => match argument {
+                None => self.set_status(
+                    "Usage: :filter all|skill|agent|command|rule|snippet",
+                    Level::Error,
+                ),
+                Some(value) if value.eq_ignore_ascii_case("all") => {
+                    self.set_kind_filter(None);
+                }
+                Some(value) => match Kind::parse_loose(value) {
+                    Some(kind) => self.set_kind_filter(Some(kind)),
+                    None => self.set_status(format!("Unknown kind `{value}`"), Level::Error),
+                },
+            },
+            "theme" | "colors" => {
+                let value = argument.unwrap_or_default().to_ascii_lowercase();
+                if ["dark", "light", "mono"].contains(&value.as_str()) {
+                    self.theme_preset_override = Some(value.clone());
+                    self.set_status(format!("Theme: {value}"), Level::Info);
+                } else {
+                    self.set_status("Usage: :theme dark|light|mono", Level::Error);
+                }
+            }
+            "warnings" => {
+                if self.warnings.is_empty() {
+                    self.set_status("No warnings", Level::Success);
+                } else {
+                    let first = self.warnings.first().cloned().unwrap_or_default();
+                    self.set_status(
+                        format!("{} warning(s): {first}", self.warnings.len()),
+                        Level::Warning,
+                    );
+                }
+            }
+            other => self.set_status(
+                format!("Unknown command `:{other}` — press ? for help"),
+                Level::Error,
+            ),
+        }
+    }
+
+    pub fn after_edit(&mut self, config_edited: bool) {
+        if config_edited {
+            match config::load(&self.config_path) {
+                Ok((cfg, warnings)) => {
+                    let (keys, key_warnings) = Keymap::from_map(&cfg.keys);
+                    self.cfg = cfg;
+                    self.keys = keys;
+                    self.theme_preset_override = None;
+                    self.show_preview = self.cfg.layout.show_preview;
+                    self.static_warnings = warnings;
+                    self.static_warnings.extend(key_warnings);
+                    self.reload(false);
+                    self.set_status("Configuration reloaded", Level::Success);
+                }
+                Err(error) => {
+                    self.set_status(format!("Configuration error: {error:#}"), Level::Error);
+                }
+            }
+        } else {
+            self.reload(true);
+            self.set_status("Reloaded", Level::Success);
+        }
+    }
+
+    pub fn take_effect(&mut self) -> Option<Effect> {
+        if self.effects.is_empty() {
+            None
+        } else {
+            Some(self.effects.remove(0))
+        }
+    }
+
+    pub fn take_copy(&mut self) -> Option<String> {
+        self.copy.take()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+
+    fn app_with_sources(root: &Path) -> App {
+        let cfg = Config {
+            sources: vec![
+                Source::new(Kind::Skill, root.join("skills").to_string_lossy()),
+                Source::new(Kind::Agent, root.join("agents").to_string_lossy()),
+            ],
+            ..Config::default()
+        };
+        App::new(cfg, root.join("config.toml"), Vec::new(), String::new())
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn type_text(app: &mut App, text: &str) {
+        for ch in text.chars() {
+            app.on_key(key(KeyCode::Char(ch)));
+        }
+    }
+
+    #[test]
+    fn text_input_handles_utf8() {
+        let mut input = TextInput::default();
+        input.insert('a');
+        input.insert('é');
+        input.insert('b');
+        assert_eq!(input.value, "aéb");
+        assert_eq!(input.cursor, 3);
+        input.left();
+        input.backspace();
+        assert_eq!(input.value, "ab");
+        assert_eq!(input.cursor, 1);
+        input.end();
+        input.right();
+        assert_eq!(input.cursor, 2);
+        input.home();
+        input.right();
+        assert_eq!(input.cursor, 1);
+        input.delete();
+        assert_eq!(input.value, "a");
+        input.clear();
+        assert_eq!(input.value, "");
+        assert_eq!(input.cursor, 0);
+    }
+
+    #[test]
+    fn search_filters_and_escape_restores() {
+        let dir = tempfile::tempdir().unwrap();
+        let skills = dir.path().join("skills").join("deploy");
+        fs::create_dir_all(&skills).unwrap();
+        fs::write(
+            skills.join("SKILL.md"),
+            "---\nname: deploy\ndescription: Deploy services\n---\n",
+        )
+        .unwrap();
+        let agents = dir.path().join("agents");
+        fs::create_dir_all(&agents).unwrap();
+        fs::write(
+            agents.join("reviewer.md"),
+            "---\nname: reviewer\ndescription: Reviews code\n---\n",
+        )
+        .unwrap();
+
+        let mut app = app_with_sources(dir.path());
+        assert_eq!(app.filtered.len(), 2);
+
+        app.on_key(key(KeyCode::Char('/')));
+        assert_eq!(app.mode, Mode::Search);
+        type_text(&mut app, "deploy");
+        assert_eq!(app.filtered.len(), 1);
+        assert_eq!(app.current().unwrap().name, "deploy");
+        app.on_key(key(KeyCode::Esc));
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.filtered.len(), 2);
+        assert!(app.query.is_empty());
+
+        app.on_key(key(KeyCode::Char('/')));
+        type_text(&mut app, "review");
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.query, "review");
+        assert_eq!(app.filtered.len(), 1);
+        assert_eq!(app.current().unwrap().name, "reviewer");
+    }
+
+    #[test]
+    fn keymap_sequences_drive_navigation() {
+        let dir = tempfile::tempdir().unwrap();
+        let agents = dir.path().join("agents");
+        fs::create_dir_all(&agents).unwrap();
+        for name in ["alpha", "beta", "gamma"] {
+            fs::write(
+                agents.join(format!("{name}.md")),
+                format!("---\nname: {name}\ndescription: {name}\n---\n"),
+            )
+            .unwrap();
+        }
+        let mut app = app_with_sources(dir.path());
+        assert_eq!(app.filtered.len(), 3);
+        app.on_key(key(KeyCode::Char('j')));
+        assert_eq!(app.selected, 1);
+        app.on_key(key(KeyCode::Char('G')));
+        assert_eq!(app.selected, 2);
+        app.on_key(key(KeyCode::Char('g')));
+        app.on_key(key(KeyCode::Char('g')));
+        assert_eq!(app.selected, 0);
+        app.on_key(key(KeyCode::Char('2')));
+        assert_eq!(app.kind_filter, Some(Kind::Agent));
+        assert_eq!(app.filtered.len(), 3);
+        app.on_key(key(KeyCode::Char('0')));
+        assert_eq!(app.kind_filter, None);
+    }
+
+    #[test]
+    fn create_form_writes_asset_and_selects_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_sources(dir.path());
+        assert!(app.assets.is_empty());
+
+        app.on_key(key(KeyCode::Char('a')));
+        assert_eq!(app.mode, Mode::Form);
+        type_text(&mut app, "new-skill");
+        app.on_key(key(KeyCode::Tab));
+        type_text(&mut app, "Does new things");
+        app.on_key(key(KeyCode::Enter));
+
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.assets.len(), 1);
+        assert_eq!(app.current().unwrap().name, "new-skill");
+        assert_eq!(app.current().unwrap().kind, Kind::Skill);
+        assert!(app.current().unwrap().path.ends_with("new-skill/SKILL.md"));
+    }
+
+    #[test]
+    fn create_form_requires_description_and_reports_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_sources(dir.path());
+        app.on_key(key(KeyCode::Char('a')));
+        type_text(&mut app, "valid-name");
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.mode, Mode::Form);
+        assert_eq!(
+            app.form.as_ref().unwrap().error.as_deref(),
+            Some("description is required")
+        );
+    }
+
+    #[test]
+    fn commands_change_filters_and_sort() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_sources(dir.path());
+        app.run_command("filter agents");
+        assert_eq!(app.kind_filter, Some(Kind::Agent));
+        app.run_command("filter all");
+        assert_eq!(app.kind_filter, None);
+        app.run_command("sort name");
+        assert_eq!(app.sort, SortMode::Name);
+        app.run_command("theme mono");
+        assert_eq!(app.theme_preset_override.as_deref(), Some("mono"));
+        app.run_command("nope");
+        assert!(
+            app.status
+                .as_ref()
+                .unwrap()
+                .text
+                .contains("Unknown command")
+        );
+    }
+
+    #[test]
+    fn creating_while_filtered_reveals_the_new_asset() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_sources(dir.path());
+        app.query = "no-such-asset".into();
+        app.recompute();
+        assert!(app.filtered.is_empty());
+
+        app.on_key(key(KeyCode::Char('a')));
+        type_text(&mut app, "fresh-skill");
+        app.on_key(key(KeyCode::Tab));
+        type_text(&mut app, "Freshly created");
+        app.on_key(key(KeyCode::Enter));
+
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(app.query.is_empty());
+        assert_eq!(app.current().unwrap().name, "fresh-skill");
+    }
+
+    #[test]
+    fn delete_confirmation_moves_to_trash() {
+        let dir = tempfile::tempdir().unwrap();
+        let agents = dir.path().join("agents");
+        fs::create_dir_all(&agents).unwrap();
+        let path = agents.join("victim.md");
+        fs::write(&path, "---\nname: victim\ndescription: x\n---\n").unwrap();
+        let mut app = app_with_sources(dir.path());
+        app.data_dir = dir.path().join("data");
+        app.on_key(key(KeyCode::Char('d')));
+        assert_eq!(app.mode, Mode::Confirm);
+        app.on_key(key(KeyCode::Char('y')));
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(!path.exists());
+        assert!(app.assets.is_empty());
+    }
+}
