@@ -21,3 +21,7 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
       - run: cargo build --release
+      - run: node --check packaging/npm/bin/arsenal.js
+      - run: node --check packaging/winget/render.mjs
+      - run: cd packaging/npm && npm pack --dry-run
+      - run: node packaging/winget/render.mjs --sha256 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef --out /tmp/winget-manifests

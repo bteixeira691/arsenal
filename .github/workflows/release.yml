@@ -1,0 +1,128 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.asset }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset: arsenal-x86_64-unknown-linux-gnu
+            linker: ""
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            asset: arsenal-aarch64-unknown-linux-gnu
+            linker: aarch64-linux-gnu-gcc
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            asset: arsenal-aarch64-apple-darwin
+            linker: ""
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            asset: arsenal-x86_64-apple-darwin
+            linker: ""
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset: arsenal-x86_64-pc-windows-msvc.exe
+            linker: ""
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install cross linker
+        if: matrix.linker != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Build
+        shell: bash
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.linker }}
+        run: |
+          set -euo pipefail
+          cargo build --release --locked --target "${{ matrix.target }}"
+          source="target/${{ matrix.target }}/release/arsenal"
+          if [[ "${{ matrix.target }}" == *windows* ]]; then
+            source="${source}.exe"
+          fi
+          mkdir -p dist
+          cp "$source" "dist/${{ matrix.asset }}"
+          if [[ "${{ matrix.asset }}" != *.exe ]]; then
+            chmod +x "dist/${{ matrix.asset }}"
+          fi
+          node -e '
+            const fs = require("node:fs");
+            const crypto = require("node:crypto");
+            const path = process.argv[1];
+            const hash = crypto.createHash("sha256").update(fs.readFileSync(path)).digest("hex");
+            process.stdout.write(hash + "\n");
+          ' "dist/${{ matrix.asset }}" > "dist/${{ matrix.asset }}.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+
+  publish-npm:
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+      - name: Check version matches tag
+        if: env.NODE_AUTH_TOKEN != ''
+        working-directory: packaging/npm
+        run: |
+          node -e '
+            const pkg = require("./package.json");
+            if (`v${pkg.version}` !== process.env.GITHUB_REF_NAME) {
+              console.error(`package.json ${pkg.version} does not match ${process.env.GITHUB_REF_NAME}`);
+              process.exit(1);
+            }
+          '
+      - name: Publish to npm
+        if: env.NODE_AUTH_TOKEN != ''
+        working-directory: packaging/npm
+        run: npm publish --access public

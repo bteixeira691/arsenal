@@ -25,14 +25,46 @@ content.
 
 ## Install
 
+Prebuilt packages come from tagged GitHub releases.
+
+### macOS and Linux
+
+```sh
+bun install -g arsenal-tui
+arsenal --version
+```
+
+`npm install -g arsenal-tui` works too. The first run downloads the matching
+release binary for the platform, verifies its SHA-256, and caches it. Supported:
+macOS arm64/x64, Linux arm64/x64 (glibc). The package is published from this
+repository with `npm publish`; see [packaging](packaging/README.md).
+
+### Windows
+
+```sh
+winget install --id Bteixeira.Arsenal -e
+```
+
+Winget availability requires the generated manifest to be merged into
+`microsoft/winget-pkgs`; see [packaging](packaging/README.md). Until then, use
+`bun install -g arsenal-tui` on Windows as well.
+
+### From source
+
 Requires Rust 1.88+.
 
 ```sh
-cargo install --path .
+cargo install --path . --root "$HOME/.local"
 arsenal --version
 ```
 
 For development, `cargo run -- --help`.
+
+### Publishing a release
+
+Push a `v*` tag. The release workflow builds macOS arm64/x64, Linux arm64/x64,
+and Windows x64, writes `.sha256` files, and attaches them to the GitHub release.
+npm and winget publication steps are in [packaging](packaging/README.md).
 
 ## Quick start
 
@@ -437,6 +469,7 @@ src/search.rs  fuzzy scoring and ordering
 src/ui.rs      rendering
 src/editor.rs  $EDITOR and file-manager integration
 src/install.rs git cloning, URL parsing, asset resolution
+packaging/     npm launcher, winget manifests, release notes
 ```
 
 Unit tests cover frontmatter fallbacks, scanning, scaffolding, trash, fuzzy
