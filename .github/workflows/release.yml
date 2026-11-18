@@ -9,7 +9,28 @@ permissions:
   contents: write
 
 jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check publish secrets
+        env:
+          PUBLISH_BUN: ${{ vars.PUBLISH_BUN }}
+          PUBLISH_WINGET: ${{ vars.PUBLISH_WINGET }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ "$PUBLISH_BUN" = "true" ] && [ -z "$NPM_TOKEN" ]; then
+            echo "::error::PUBLISH_BUN is true but NPM_TOKEN is missing."
+            exit 1
+          fi
+          if [ "$PUBLISH_WINGET" = "true" ] && [ -z "$WINGET_TOKEN" ]; then
+            echo "::error::PUBLISH_WINGET is true but WINGET_TOKEN is missing."
+            exit 1
+          fi
+
   build:
+    needs: preflight
     name: ${{ matrix.asset }}
     runs-on: ${{ matrix.os }}
     strategy:
