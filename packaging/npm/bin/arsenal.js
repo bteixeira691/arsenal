@@ -27,7 +27,7 @@ function repositorySlug() {
   if (process.env.ARSENAL_REPO) return process.env.ARSENAL_REPO;
   const url = (pkg.repository && pkg.repository.url) || "";
   const match = url.match(/github\.com[/:]([^/]+)\/([^/.]+?)(?:\.git)?$/);
-  return match ? `${match[1]}/${match[2]}` : "bteixeira/arsenal";
+  return match ? `${match[1]}/${match[2]}` : "bteixeira691/arsenal";
 }
 
 function cacheRoot() {

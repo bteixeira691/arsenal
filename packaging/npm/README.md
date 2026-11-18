@@ -1,6 +1,6 @@
 # arsenal-tui
 
-npm/Bun launcher for [Arsenal](https://github.com/bteixeira/arsenal), a terminal
+npm/Bun launcher for [Arsenal](https://github.com/bteixeira691/arsenal), a terminal
 UI for agent skills, agents, commands, and rules.
 
 ```sh

@@ -6,6 +6,7 @@ rust-version = "1.88"
 description = "Terminal UI for cataloging, searching, and authoring agent skills, agents, commands, and rules"
 license = "MIT"
 readme = "README.md"
+repository = "https://github.com/bteixeira691/arsenal"
 keywords = ["tui", "agents", "skills", "ratatui", "cli"]
 categories = ["command-line-utilities", "development-tools"]
 
