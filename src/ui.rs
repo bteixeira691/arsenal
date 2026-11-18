@@ -3,7 +3,7 @@
 use ratatui::prelude::*;
 use ratatui::widgets::{
     Block, BorderType, Borders, Clear, Gauge, List, ListItem, Paragraph, Scrollbar,
-    ScrollbarOrientation, ScrollbarState, Tabs, Wrap,
+    ScrollbarOrientation, ScrollbarState, Wrap,
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -80,7 +80,7 @@ const HELP_GROUPS: &[(&str, &[Action])] = &[
 pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
     let theme = app.theme();
-    if area.width < 24 || area.height < 9 {
+    if area.width < 24 || area.height < 11 {
         let notice = Paragraph::new(" Terminal too small for arsenal ")
             .style(Style::new().fg(theme.error))
             .alignment(Alignment::Center);
@@ -89,7 +89,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
 
     let tabs_height = if app.mode == Mode::Edit { 0 } else { 1 };
-    let search_height = if app.mode == Mode::Edit { 0 } else { 3 };
+    let search_height = if app.mode == Mode::Edit { 0 } else { 5 };
     let chunks = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(search_height),
@@ -168,8 +168,14 @@ fn search_bar(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
         .title(Span::styled(title, title_style));
     let inner = block.inner(area);
     f.render_widget(block, area);
+    let [_, content, _] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(0),
+    ])
+    .areas(inner);
 
-    let compact = inner.width < 72;
+    let compact = content.width < 72;
     let right_text = if compact {
         String::new()
     } else if focused {
@@ -181,9 +187,9 @@ fn search_bar(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
     } else {
         format!("/ focus · sort {}", app.sort.label())
     };
-    let right_width = (right_text.width() as u16 + 1).min(inner.width / 2);
+    let right_width = (right_text.width() as u16 + 1).min(content.width / 2);
     let [left_area, right_area] =
-        Layout::horizontal([Constraint::Min(4), Constraint::Length(right_width)]).areas(inner);
+        Layout::horizontal([Constraint::Min(4), Constraint::Length(right_width)]).areas(content);
 
     let mut spans = vec![Span::styled(
         " / ",
@@ -310,15 +316,8 @@ fn discard_modal(f: &mut Frame, area: Rect, theme: &ResolvedTheme) {
 
 fn kind_tabs(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
     let compact = area.width < 96;
-    let mut labels: Vec<Line<'static>> = Vec::new();
-    let mut add = |name: &str, count: usize| {
-        labels.push(Line::from(vec![
-            Span::raw(format!(" {name} ")),
-            Span::styled(format!("{count}"), Style::new().fg(theme.border)),
-            Span::raw(" "),
-        ]));
-    };
-    add("All", app.assets.len());
+    let mut entries: Vec<(String, usize, Color)> =
+        vec![("All".to_string(), app.assets.len(), theme.accent)];
     for kind in Kind::ALL {
         let name = if compact {
             match kind {
@@ -337,24 +336,79 @@ fn kind_tabs(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
                 Kind::Snippet => "Snippets",
             }
         };
-        add(name, app.counts[kind.index()]);
+        entries.push((
+            name.to_string(),
+            app.counts[kind.index()],
+            theme.kind_color(kind),
+        ));
     }
-    add(
-        if compact { "Src" } else { "Sources" },
+    entries.push((
+        if compact { "Src" } else { "Sources" }.to_string(),
         app.cfg.sources.len(),
-    );
+        theme.accent,
+    ));
 
     let selected = if app.view == View::Sources {
         6
     } else {
         app.kind_filter.map(|kind| kind.index() + 1).unwrap_or(0)
     };
-    let tabs = Tabs::new(labels)
-        .select(selected)
-        .style(Style::new().fg(theme.muted))
-        .highlight_style(theme.selection)
-        .divider(Span::styled(" ", Style::new().fg(theme.border)));
-    f.render_widget(tabs, area);
+    let mut spans = Vec::new();
+    for (index, (name, count, color)) in entries.iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::raw(" "));
+        }
+        if index == selected {
+            spans.push(Span::styled(
+                format!(" {name} {count} "),
+                tab_active_style(*color, theme),
+            ));
+        } else {
+            spans.push(Span::styled(
+                format!(" {name} "),
+                Style::new().fg(theme.muted),
+            ));
+            spans.push(Span::styled(
+                count.to_string(),
+                Style::new().fg(theme.border),
+            ));
+            spans.push(Span::raw(" "));
+        }
+    }
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+fn tab_active_style(color: Color, theme: &ResolvedTheme) -> Style {
+    if color == Color::Reset {
+        return theme.selection;
+    }
+    Style::new()
+        .bg(color)
+        .fg(contrast_fg(color))
+        .add_modifier(Modifier::BOLD)
+}
+
+fn contrast_fg(color: Color) -> Color {
+    match color {
+        Color::Rgb(red, green, blue) => {
+            let luminance =
+                (u32::from(red) * 299 + u32::from(green) * 587 + u32::from(blue) * 114) / 1000;
+            if luminance > 150 {
+                Color::Black
+            } else {
+                Color::White
+            }
+        }
+        Color::Indexed(index) => {
+            if matches!(index, 0..=6 | 8) {
+                Color::White
+            } else {
+                Color::Black
+            }
+        }
+        Color::Black | Color::DarkGray | Color::Red | Color::Blue | Color::Magenta => Color::White,
+        _ => Color::Black,
+    }
 }
 
 fn header(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
