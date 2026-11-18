@@ -1246,11 +1246,11 @@ fn form_modal(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
     ));
 
     let mut source_spans = vec![Span::styled(format!("{:<12}", "source"), label)];
-    let source_value = if form.source_chosen {
+    let source_value = if form.picker.pos.is_some() {
         form.source(&app.cfg)
-            .map(|source| source.display_with_path())
+            .map(|source| source.display())
             .unwrap_or_else(|| "— no source configured —".to_string())
-    } else if form.source_options.is_empty() {
+    } else if form.picker.options.is_empty() {
         "— no source configured —".to_string()
     } else {
         "choose integration".to_string()
@@ -1427,11 +1427,11 @@ fn install_modal(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
     }
     lines.push(Line::from(kind_spans));
 
-    let source_value = if form.source_chosen {
+    let source_value = if form.picker.pos.is_some() {
         form.source(&app.cfg)
-            .map(|source| source.display_with_path())
+            .map(|source| source.display())
             .unwrap_or_else(|| "— no source configured for this kind —".to_string())
-    } else if form.source_options.is_empty() {
+    } else if form.picker.options.is_empty() {
         "— no source configured for this kind —".to_string()
     } else {
         "choose integration".to_string()

@@ -812,6 +812,35 @@ mod tests {
     }
 
     #[test]
+    fn labeled_sources_keep_distinct_asset_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mut first = Source::new(Kind::Skill, root.join("one").to_string_lossy());
+        first.label = Some("Claude Code".into());
+        let mut second = Source::new(Kind::Skill, root.join("two").to_string_lossy());
+        second.label = Some("Claude Code".into());
+        for (source, name) in [(&first, "one"), (&second, "two")] {
+            let skill = source.resolved().join(name);
+            fs::create_dir_all(&skill).unwrap();
+            fs::write(
+                skill.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: {name}\n---\n"),
+            )
+            .unwrap();
+        }
+
+        let report = scan(&[first.clone(), second.clone()], &Behavior::default());
+        assert_eq!(report.assets.len(), 2);
+        assert!(report.assets.iter().any(|asset| asset.source == first.path));
+        assert!(
+            report
+                .assets
+                .iter()
+                .any(|asset| asset.source == second.path)
+        );
+    }
+
+    #[test]
     fn creates_asset_and_refuses_overwrite() {
         let dir = tempfile::tempdir().unwrap();
         let source = Source::new(Kind::Skill, dir.path().join("skills").to_string_lossy());

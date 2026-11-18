@@ -1,4 +1,4 @@
-name: release
+name: release-bun
 
 on:
   push:
@@ -6,31 +6,46 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-bun-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  preflight:
+  validate:
     runs-on: ubuntu-latest
     steps:
-      - name: Check publish secrets
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Check publish secret
         env:
           PUBLISH_BUN: ${{ vars.PUBLISH_BUN }}
-          PUBLISH_WINGET: ${{ vars.PUBLISH_WINGET }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
         run: |
           set -euo pipefail
           if [ "$PUBLISH_BUN" = "true" ] && [ -z "$NPM_TOKEN" ]; then
             echo "::error::PUBLISH_BUN is true but NPM_TOKEN is missing."
             exit 1
           fi
-          if [ "$PUBLISH_WINGET" = "true" ] && [ -z "$WINGET_TOKEN" ]; then
-            echo "::error::PUBLISH_WINGET is true but WINGET_TOKEN is missing."
+      - name: Check tag matches Cargo and npm versions
+        run: |
+          set -euo pipefail
+          cargo_version=$(cargo pkgid | sed 's/.*#//')
+          npm_version=$(node -p "require('./packaging/npm/package.json').version")
+          if [ "v$cargo_version" != "$GITHUB_REF_NAME" ] || [ "v$npm_version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match Cargo $cargo_version / npm $npm_version"
             exit 1
           fi
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test --locked
 
   build:
-    needs: preflight
+    needs: validate
     name: ${{ matrix.asset }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -107,6 +122,8 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -119,11 +136,37 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true
 
-  publish:
+  publish-bun:
     needs: release
-    permissions:
-      contents: read
-    uses: ./.github/workflows/publish.yml
-    with:
-      tag: ${{ github.ref_name }}
-    secrets: inherit
+    if: vars.PUBLISH_BUN == 'true'
+    runs-on: ubuntu-latest
+    env:
+      NPM_CONFIG_TOKEN: ${{ secrets.NPM_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+      - name: Require npm token
+        run: |
+          if [ -z "$NPM_CONFIG_TOKEN" ]; then
+            echo "::error::PUBLISH_BUN is true but NPM_TOKEN is missing."
+            exit 1
+          fi
+      - name: Check version matches tag
+        working-directory: packaging/npm
+        run: |
+          set -euo pipefail
+          version=$(bun -e 'console.log(require("./package.json").version)')
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::package.json $version does not match $GITHUB_REF_NAME"
+            exit 1
+          fi
+      - name: Check package contents
+        working-directory: packaging/npm
+        run: bun pm pack --dry-run
+      - name: Publish to npm with Bun
+        working-directory: packaging/npm
+        run: bun publish --access public

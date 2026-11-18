@@ -62,11 +62,11 @@ For development, `cargo run -- --help`.
 
 ### Publishing a release
 
-Push a `v*` tag. The release workflow builds macOS arm64/x64, Linux arm64/x64,
-and Windows x64, writes `.sha256` files, and attaches them to the GitHub release.
-It then publishes the Bun/npm package and opens the winget PR when the
-`PUBLISH_BUN` and `PUBLISH_WINGET` repository variables and corresponding
-secrets are configured; see [packaging](packaging/README.md).
+Push a `v*` tag. `release-bun` builds macOS arm64/x64, Linux arm64/x64, and
+Windows x64, writes `.sha256` files, attaches them to the GitHub release, and
+publishes the Bun/npm package. `release-winget` waits for the Windows asset and
+opens the winget PR. Both publish steps require `PUBLISH_BUN` /
+`PUBLISH_WINGET` and their secrets; see [packaging](packaging/README.md).
 
 ## Quick start
 
@@ -111,15 +111,16 @@ tools. Sources are labeled in the Sources tab and install form.
 | OMP | `~/.omp/agent` | `./.omp` | skills, agents, commands, rules |
 | Claude Code | `~/.claude` | `./.claude` | skills, agents, commands, rules |
 | OpenCode | `~/.config/opencode` | `./.opencode` | skills, agents, commands |
-| Codex | `~/.codex` | `./.codex` | skills, agents, commands |
+| Codex | `~/.codex` | `./.codex` | skills |
 | Gemini CLI | `~/.gemini` | `./.gemini` | skills |
 | Agents | `~/.agents`, `~/.agent` | `./.agents`, `./.agent` | skills, agents, commands, rules |
 | GitHub | — | `./.github` | skills |
 
 Each root follows the tool's normal `<kind>s/` layout, for example
-`~/.config/opencode/skills/<name>/SKILL.md`. Existing configs pick up
-integration roots whose base directory already exists. Missing directories are
-ignored; add custom roots with `A`, `arsenal sources add`, or `[[sources]]`.
+`~/.config/opencode/skills/<name>/SKILL.md`. New configs include these roots;
+existing configs keep their own source list. Missing directories are ignored;
+add custom or integration roots with `A`, `arsenal sources add`, or
+`[[sources]]`.
 
 `arsenal integrations` prints the full path/status matrix; `--json` emits one
 object per root.

@@ -26,8 +26,8 @@ git tag v0.5.0
 git push origin v0.5.0
 ```
 
-`.github/workflows/release.yml` builds all targets, writes checksums, and
-publishes the GitHub release.
+`.github/workflows/release-bun.yml` builds all targets, writes checksums,
+publishes the GitHub release, and then publishes the Bun/npm package.
 
 ## npm / Bun
 
@@ -40,14 +40,20 @@ cd packaging/npm
 npm publish --access public
 ```
 
-Automatic publishing is opt-in per registry. On a `v*` tag, after the GitHub
-release exists:
+Automatic publishing is split across three workflows:
 
-- `publish-bun` runs when `PUBLISH_BUN=true` and publishes `packaging/npm` with
-  Bun to the npm registry, using the `NPM_TOKEN` secret.
-- `publish-winget` runs when `PUBLISH_WINGET=true`, renders and validates the
-  portable Windows manifest from the released `.exe`, and opens the
-  `microsoft/winget-pkgs` PR with the `WINGET_TOKEN` secret.
+- `ci.yml` builds, lints, and tests changes on `main` and pull requests.
+- `release-bun.yml` runs on a `v*` tag: it validates versions, builds all release
+  binaries, publishes the GitHub release, and publishes `packaging/npm` with Bun.
+- `release-winget.yml` runs on the same tag, waits for the Windows release asset,
+  renders and validates the portable manifest, and submits the
+  `microsoft/winget-pkgs` PR.
+
+The publish jobs are opt-in per registry:
+
+- `publish-bun` runs when `PUBLISH_BUN=true` and uses the `NPM_TOKEN` secret.
+- `publish-winget` runs when `PUBLISH_WINGET=true` and uses the `WINGET_TOKEN`
+  secret.
 
 Enable both once from the repository root:
 
@@ -67,9 +73,9 @@ only after the release assets exist, so `bun install -g arsenal-tui` can
 download the binary immediately.
 
 To release: bump both `Cargo.toml` and `packaging/npm/package.json`, commit,
-then push a `vX.Y.Z` tag. The workflow builds all binaries, publishes the
-release, checks the tag against `package.json`, publishes with Bun, and opens
-the winget PR.
+then push a `vX.Y.Z` tag. `release-bun` validates both versions against the tag,
+builds all binaries, publishes the release, and publishes with Bun.
+`release-winget` waits for the Windows asset and opens the winget PR.
 
 Manual publishing remains available:
 
@@ -80,10 +86,10 @@ bun pm pack --dry-run     # inspect files without auth
 bun publish               # unscoped package is public by default
 ```
 
-Backfill an existing release without moving its tag:
+Backfill an existing winget release without moving its tag:
 
 ```sh
-gh workflow run publish.yml -f tag=v0.6.1
+gh workflow run release-winget.yml -f tag=v0.6.2
 ```
 
 `bun publish --tag next` handles prereleases. Do not pass `--provenance`: Bun

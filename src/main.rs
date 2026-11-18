@@ -268,13 +268,13 @@ fn integrations_command(json: bool) -> Result<()> {
 
     let roots = integrations::roots();
     if json {
-        for (integration, kind, path, exists) in roots {
+        for root in roots {
             let row = Root {
-                id: integration.id,
-                integration: integration.name,
-                kind: kind.as_str(),
-                path: compact_home(&path),
-                exists,
+                id: root.integration.id,
+                integration: root.integration.name,
+                kind: root.kind.as_str(),
+                path: compact_home(&root.path),
+                exists: root.exists,
             };
             println!("{}", serde_json::to_string(&row)?);
         }
@@ -282,13 +282,13 @@ fn integrations_command(json: bool) -> Result<()> {
     }
 
     println!("{:<12} {:<8} {:<8} PATH", "INTEGRATION", "KIND", "STATUS");
-    for (integration, kind, path, exists) in roots {
+    for root in roots {
         println!(
             "{:<12} {:<8} {:<8} {}",
-            integration.name,
-            kind.as_str(),
-            if exists { "ok" } else { "missing" },
-            compact_home(&path)
+            root.integration.name,
+            root.kind.as_str(),
+            if root.exists { "ok" } else { "missing" },
+            compact_home(&root.path)
         );
     }
     Ok(())

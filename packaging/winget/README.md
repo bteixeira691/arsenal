@@ -6,7 +6,7 @@ directory generates and documents that submission.
 
 ## 1. Publish a GitHub release
 
-Push a tag (`v0.5.0`). `.github/workflows/release.yml` builds
+Push a tag (`v0.5.0`). `.github/workflows/release-bun.yml` builds
 `arsenal-x86_64-pc-windows-msvc.exe` and its `.sha256` and attaches both to the
 release.
 
@@ -55,11 +55,11 @@ the render command, the path under `manifests/`, and future releases.
 
 ## Automatic tag flow
 
-The release workflow has a `publish-winget` job. It runs after the GitHub
-release on a `v*` tag when the repository variable `PUBLISH_WINGET` is `true`:
+`release-winget.yml` runs on a `v*` tag when `PUBLISH_WINGET` is `true`:
 
-1. Download the released Windows `.exe` and compute its SHA-256.
-2. Render the 1.28 manifests with `packaging/winget/render.mjs`.
+1. Wait for the Windows `.exe` from the GitHub release (up to 20 minutes).
+2. Compute its SHA-256 and render the 1.28 manifests with
+   `packaging/winget/render.mjs`.
 3. Run `winget validate`.
 4. Install `wingetcreate` and open the `microsoft/winget-pkgs` PR with the
    `WINGET_TOKEN` repository secret.
@@ -71,13 +71,13 @@ on each PR.
 
 ## Manual GitHub Actions flow
 
-The `winget` workflow remains available for backfills and testing and never runs
-on a tag:
+`release-winget.yml` also has a `workflow_dispatch` entry for backfills and
+testing:
 
-1. Open **Actions → winget → Run workflow**.
-2. Enter the release version, package ID, and publisher.
-3. Run with `submit = false`. It downloads the Windows release asset, computes
-   the SHA-256, renders 1.28 manifests, runs `winget validate`, attempts a local
+1. Open **Actions → release-winget → Run workflow**.
+2. Enter the release tag, package ID, and publisher.
+3. Run with `submit = false`. It waits for the release asset, computes the
+   SHA-256, renders 1.28 manifests, runs `winget validate`, attempts a local
    install/uninstall, and uploads the manifest set as an artifact.
 4. Add a `WINGET_TOKEN` repository secret using a classic GitHub PAT with `repo`
    scope.

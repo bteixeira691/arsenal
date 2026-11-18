@@ -1,6 +1,6 @@
 //! Configuration model, path resolution, and theme resolution.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::io::ErrorKind;
@@ -99,16 +99,6 @@ impl Config {
             if source.label.is_none() {
                 source.label =
                     crate::integrations::label_for_path(&source.path).map(str::to_string);
-            }
-            sources.push(source);
-        }
-        let known: BTreeSet<(Kind, PathBuf)> = sources
-            .iter()
-            .map(|source| (source.kind, source.resolved()))
-            .collect();
-        for source in crate::integrations::existing_sources() {
-            if known.contains(&(source.kind, source.resolved())) {
-                continue;
             }
             sources.push(source);
         }
@@ -446,10 +436,6 @@ impl Source {
     }
 
     pub fn display(&self) -> String {
-        self.label.clone().unwrap_or_else(|| self.path.clone())
-    }
-
-    pub fn display_with_path(&self) -> String {
         match &self.label {
             Some(label) => format!("{label} · {}", self.path),
             None => self.path.clone(),
@@ -846,12 +832,7 @@ mod tests {
         assert!(warnings.iter().any(|w| w.contains("neon")));
         assert!(warnings.iter().any(|w| w.contains("not-a-color")));
         assert!(warnings.iter().any(|w| w.contains("empty path")));
-        assert!(
-            config
-                .sources
-                .iter()
-                .all(|source| !source.path.trim().is_empty())
-        );
+        assert!(config.sources.is_empty());
     }
 
     #[test]

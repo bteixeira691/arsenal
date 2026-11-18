@@ -4,7 +4,7 @@
 //! supports. The paths intentionally mirror the tools' documented discovery
 //! roots; a missing root is harmless and simply produces no assets.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::asset::Kind;
 use crate::config::Source;
@@ -45,7 +45,7 @@ pub const INTEGRATIONS: &[Integration] = &[
         name: "Codex",
         user_bases: &["~/.codex"],
         project_bases: &["./.codex"],
-        kinds: &[Kind::Skill, Kind::Agent, Kind::Command],
+        kinds: &[Kind::Skill],
     },
     Integration {
         id: "gemini",
@@ -89,15 +89,6 @@ pub fn sources() -> Vec<Source> {
     sources
 }
 
-/// Integration roots whose base directory exists, for upgrading an existing
-/// config without adding empty integrations.
-pub fn existing_sources() -> Vec<Source> {
-    sources()
-        .into_iter()
-        .filter(|source| source.resolved().parent().is_some_and(Path::is_dir))
-        .collect()
-}
-
 /// Infer the integration name for an existing source path. Custom paths still
 /// have no label.
 pub fn label_for_path(path: &str) -> Option<&'static str> {
@@ -122,8 +113,16 @@ pub fn label_for_path(path: &str) -> Option<&'static str> {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct IntegrationRoot {
+    pub integration: Integration,
+    pub kind: Kind,
+    pub path: PathBuf,
+    pub exists: bool,
+}
+
 /// Paths shown by `arsenal integrations`.
-pub fn roots() -> Vec<(Integration, Kind, PathBuf, bool)> {
+pub fn roots() -> Vec<IntegrationRoot> {
     let mut roots = Vec::new();
     for integration in INTEGRATIONS {
         for base in integration
@@ -134,7 +133,12 @@ pub fn roots() -> Vec<(Integration, Kind, PathBuf, bool)> {
             for kind in integration.kinds {
                 let path = crate::config::expand_path(&format!("{}/{}", base, kind.plural()));
                 let exists = path.is_dir();
-                roots.push((*integration, *kind, path, exists));
+                roots.push(IntegrationRoot {
+                    integration: *integration,
+                    kind: *kind,
+                    path,
+                    exists,
+                });
             }
         }
     }

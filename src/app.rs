@@ -229,14 +229,60 @@ impl FormField {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct SourcePicker {
+    pub options: Vec<usize>,
+    pub pos: Option<usize>,
+}
+
+impl SourcePicker {
+    fn rebuild(&mut self, cfg: &Config, kind: Kind, preferred: Option<&str>) {
+        self.options = cfg
+            .sources
+            .iter()
+            .enumerate()
+            .filter(|(_, source)| source.kind == kind)
+            .map(|(index, _)| index)
+            .collect();
+        let preferred_pos = preferred.and_then(|path| {
+            self.options
+                .iter()
+                .position(|&index| cfg.sources[index].path == path)
+        });
+        self.pos = preferred_pos.or(if self.options.len() == 1 {
+            Some(0)
+        } else {
+            None
+        });
+    }
+
+    fn source<'a>(&self, cfg: &'a Config) -> Option<&'a Source> {
+        self.pos
+            .and_then(|pos| self.options.get(pos))
+            .map(|&index| &cfg.sources[index])
+    }
+
+    fn cycle(&mut self, delta: i32) {
+        let len = self.options.len();
+        if len == 0 {
+            self.pos = None;
+            return;
+        }
+        self.pos = Some(match (self.pos, delta < 0) {
+            (None, true) => len - 1,
+            (None, false) => 0,
+            (Some(pos), true) => (pos + len - 1) % len,
+            (Some(pos), false) => (pos + 1) % len,
+        });
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Form {
     pub kind: Kind,
     pub name: TextInput,
     pub description: TextInput,
-    pub source_options: Vec<usize>,
-    pub source_pos: usize,
-    pub source_chosen: bool,
+    pub picker: SourcePicker,
     pub focus: FormField,
     pub error: Option<String>,
 }
@@ -247,9 +293,7 @@ impl Form {
             kind,
             name: TextInput::default(),
             description: TextInput::default(),
-            source_options: Vec::new(),
-            source_pos: 0,
-            source_chosen: false,
+            picker: SourcePicker::default(),
             focus: FormField::Name,
             error: None,
         };
@@ -258,29 +302,11 @@ impl Form {
     }
 
     fn rebuild_sources(&mut self, cfg: &Config, preferred: Option<&str>) {
-        self.source_options = cfg
-            .sources
-            .iter()
-            .enumerate()
-            .filter(|(_, source)| source.kind == self.kind)
-            .map(|(index, _)| index)
-            .collect();
-        let preferred_pos = preferred.and_then(|path| {
-            self.source_options
-                .iter()
-                .position(|&index| cfg.sources[index].path == path)
-        });
-        self.source_pos = preferred_pos.unwrap_or(0);
-        self.source_chosen = preferred_pos.is_some() || self.source_options.len() == 1;
+        self.picker.rebuild(cfg, self.kind, preferred);
     }
 
     pub fn source<'a>(&self, cfg: &'a Config) -> Option<&'a Source> {
-        if !self.source_chosen {
-            return None;
-        }
-        self.source_options
-            .get(self.source_pos)
-            .map(|&index| &cfg.sources[index])
+        self.picker.source(cfg)
     }
 
     fn cycle(&mut self, cfg: &Config, delta: i32) {
@@ -291,18 +317,7 @@ impl Form {
                 self.kind = Kind::ALL[next as usize];
                 self.rebuild_sources(cfg, preferred.as_deref());
             }
-            FormField::Source => {
-                let len = self.source_options.len();
-                if len > 0 {
-                    if !self.source_chosen {
-                        self.source_chosen = true;
-                        self.source_pos = if delta < 0 { len - 1 } else { 0 };
-                    } else {
-                        let next = (self.source_pos as i32 + delta).rem_euclid(len as i32);
-                        self.source_pos = next as usize;
-                    }
-                }
-            }
+            FormField::Source => self.picker.cycle(delta),
             _ => {}
         }
     }
@@ -347,9 +362,7 @@ impl InstallField {
 pub struct InstallForm {
     pub url: TextInput,
     pub kind: Kind,
-    pub source_options: Vec<usize>,
-    pub source_pos: usize,
-    pub source_chosen: bool,
+    pub picker: SourcePicker,
     pub name: TextInput,
     pub focus: InstallField,
     pub error: Option<String>,
@@ -360,9 +373,7 @@ impl InstallForm {
         let mut form = InstallForm {
             url: TextInput::default(),
             kind,
-            source_options: Vec::new(),
-            source_pos: 0,
-            source_chosen: false,
+            picker: SourcePicker::default(),
             name: TextInput::default(),
             focus: InstallField::Url,
             error: None,
@@ -372,29 +383,11 @@ impl InstallForm {
     }
 
     fn rebuild_sources(&mut self, cfg: &Config, preferred: Option<&str>) {
-        self.source_options = cfg
-            .sources
-            .iter()
-            .enumerate()
-            .filter(|(_, source)| source.kind == self.kind)
-            .map(|(index, _)| index)
-            .collect();
-        let preferred_pos = preferred.and_then(|path| {
-            self.source_options
-                .iter()
-                .position(|&index| cfg.sources[index].path == path)
-        });
-        self.source_pos = preferred_pos.unwrap_or(0);
-        self.source_chosen = preferred_pos.is_some() || self.source_options.len() == 1;
+        self.picker.rebuild(cfg, self.kind, preferred);
     }
 
     pub fn source<'a>(&self, cfg: &'a Config) -> Option<&'a Source> {
-        if !self.source_chosen {
-            return None;
-        }
-        self.source_options
-            .get(self.source_pos)
-            .map(|&index| &cfg.sources[index])
+        self.picker.source(cfg)
     }
 
     fn cycle(&mut self, cfg: &Config, delta: i32) {
@@ -405,18 +398,7 @@ impl InstallForm {
                 self.kind = Kind::ALL[next as usize];
                 self.rebuild_sources(cfg, preferred.as_deref());
             }
-            InstallField::Source => {
-                let len = self.source_options.len();
-                if len > 0 {
-                    if !self.source_chosen {
-                        self.source_chosen = true;
-                        self.source_pos = if delta < 0 { len - 1 } else { 0 };
-                    } else {
-                        let next = (self.source_pos as i32 + delta).rem_euclid(len as i32);
-                        self.source_pos = next as usize;
-                    }
-                }
-            }
+            InstallField::Source => self.picker.cycle(delta),
             _ => {}
         }
     }
@@ -1239,7 +1221,7 @@ impl App {
             return;
         }
         let Some(source) = form.source(&self.cfg).cloned() else {
-            form.error = Some(if form.source_options.is_empty() {
+            form.error = Some(if form.picker.options.is_empty() {
                 format!(
                     "No source configured for {}s. Add a [[sources]] entry with kind = \"{}\".",
                     form.kind.plural(),
@@ -1912,7 +1894,7 @@ impl App {
             return;
         }
         let Some(source) = form.source(&self.cfg).cloned() else {
-            form.error = Some(if form.source_options.is_empty() {
+            form.error = Some(if form.picker.options.is_empty() {
                 format!(
                     "No source configured for {}s. Add a [[sources]] entry with kind = \"{}\".",
                     form.kind.plural(),
@@ -2455,19 +2437,19 @@ mod tests {
             ..Config::default()
         };
         let mut create = Form::new(&cfg, Kind::Skill);
-        assert!(!create.source_chosen);
+        assert!(create.picker.pos.is_none());
         assert!(create.source(&cfg).is_none());
         create.focus = FormField::Source;
         create.cycle(&cfg, 1);
-        assert!(create.source_chosen);
+        assert!(create.picker.pos.is_some());
         assert_eq!(create.source(&cfg).unwrap().path, "~/.omp/agent/skills");
 
         let mut install = InstallForm::new(&cfg, Kind::Skill);
-        assert!(!install.source_chosen);
+        assert!(install.picker.pos.is_none());
         assert!(install.source(&cfg).is_none());
         install.focus = InstallField::Source;
         install.cycle(&cfg, 1);
-        assert!(install.source_chosen);
+        assert!(install.picker.pos.is_some());
         assert_eq!(install.source(&cfg).unwrap().path, "~/.omp/agent/skills");
     }
 
