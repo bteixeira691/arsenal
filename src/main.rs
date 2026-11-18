@@ -64,6 +64,9 @@ enum Command {
         /// Sort order: kind, name, modified, path
         #[arg(long, value_name = "MODE", default_value = "kind")]
         sort: String,
+        /// Search document bodies in addition to names, tags, and descriptions
+        #[arg(long)]
+        content: bool,
     },
     /// Clone a skill or other asset from GitHub/git into a source root
     Install {
@@ -121,7 +124,12 @@ fn run(cli: Cli) -> Result<()> {
     let config_path = config::config_path(cli.config.as_deref());
     match cli.command {
         Some(Command::Config { action }) => config_command(&action, &config_path),
-        Some(Command::List { json, kind, sort }) => {
+        Some(Command::List {
+            json,
+            kind,
+            sort,
+            content,
+        }) => {
             let (cfg, warnings) = load_config(&config_path, &cli.roots)?;
             for warning in warnings {
                 eprintln!("warning: {warning}");
@@ -135,7 +143,14 @@ fn run(cli: Cli) -> Result<()> {
             let sort = SortMode::parse(&sort).ok_or_else(|| {
                 anyhow::anyhow!("unknown sort `{sort}` (kind, name, modified, path)")
             })?;
-            list_assets(&cfg, cli.query.as_deref().unwrap_or(""), kind, sort, json)
+            list_assets(
+                &cfg,
+                cli.query.as_deref().unwrap_or(""),
+                kind,
+                sort,
+                content || cfg.search.content,
+                json,
+            )
         }
         Some(Command::Install {
             source,
@@ -276,6 +291,7 @@ fn list_assets(
     query: &str,
     kind: Option<Kind>,
     sort: SortMode,
+    content: bool,
     json: bool,
 ) -> Result<()> {
     let report = asset::scan(&cfg.sources, &cfg.behavior);
@@ -283,7 +299,7 @@ fn list_assets(
         eprintln!("warning: {warning}");
     }
     let matcher = SkimMatcherV2::default();
-    let indices = search::select(&report.assets, kind, query, sort, &matcher);
+    let indices = search::select(&report.assets, kind, query, sort, content, &matcher);
 
     if json {
         let items: Vec<ListedAsset> = indices

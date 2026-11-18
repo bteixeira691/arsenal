@@ -1,5 +1,6 @@
 //! Application state, modal editors, and the event-to-action layer.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -416,6 +417,7 @@ pub struct App {
     pub selected: usize,
     pub query: String,
     pub kind_filter: Option<Kind>,
+    pub content_search: bool,
     pub sort: SortMode,
     pub mode: Mode,
     pub input: TextInput,
@@ -442,6 +444,7 @@ pub struct App {
     pub list_height: u16,
     pub list_top: usize,
     pub active_sources: usize,
+    fingerprints: BTreeMap<u64, usize>,
     pub data_dir: PathBuf,
     search_backup: String,
     matcher: SkimMatcherV2,
@@ -458,6 +461,7 @@ impl App {
         warnings.extend(key_warnings);
         let static_warnings = warnings.clone();
         let show_preview = cfg.layout.show_preview;
+        let content_search = cfg.search.content;
         let data_dir = config::data_dir();
         let mut app = App {
             cfg,
@@ -467,6 +471,7 @@ impl App {
             selected: 0,
             query: String::new(),
             kind_filter: None,
+            content_search,
             sort: SortMode::Kind,
             mode: Mode::Normal,
             input: TextInput::default(),
@@ -493,6 +498,7 @@ impl App {
             list_height: 10,
             list_top: 0,
             active_sources: 0,
+            fingerprints: BTreeMap::new(),
             data_dir,
             search_backup: String::new(),
             matcher: SkimMatcherV2::default(),
@@ -530,6 +536,27 @@ impl App {
         self.current().map(|asset| asset.path.clone())
     }
 
+    pub fn duplicate_paths(&self) -> Vec<PathBuf> {
+        let Some(current) = self.current() else {
+            return Vec::new();
+        };
+        self.assets
+            .iter()
+            .filter(|asset| {
+                asset.fingerprint == current.fingerprint && !paths_equal(&asset.path, &current.path)
+            })
+            .map(|asset| asset.path.clone())
+            .collect()
+    }
+
+    pub fn duplicate_count(&self, asset: &Asset) -> usize {
+        self.fingerprints
+            .get(&asset.fingerprint)
+            .copied()
+            .unwrap_or(1)
+            .saturating_sub(1)
+    }
+
     pub fn set_status(&mut self, text: impl Into<String>, level: Level) {
         self.status = Some(Status {
             text: text.into(),
@@ -554,6 +581,10 @@ impl App {
         };
         let report = asset::scan(&self.cfg.sources, &self.cfg.behavior);
         self.assets = report.assets;
+        self.fingerprints.clear();
+        for asset in &self.assets {
+            *self.fingerprints.entry(asset.fingerprint).or_default() += 1;
+        }
         self.active_sources = report.active_sources;
         self.warnings = self.static_warnings.clone();
         self.warnings.extend(report.warnings);
@@ -570,6 +601,7 @@ impl App {
             self.kind_filter,
             &self.query,
             self.sort,
+            self.content_search,
             &self.matcher,
         );
         if self.filtered.len() <= self.selected {
@@ -638,6 +670,15 @@ impl App {
     fn page(&mut self, delta: i32) {
         let step = self.list_height.saturating_sub(1).max(1) as i32;
         self.move_selection(delta * step, false);
+    }
+
+    fn set_content_search(&mut self, enabled: bool) {
+        self.content_search = enabled;
+        self.recompute();
+        self.set_status(
+            format!("Content search {}", if enabled { "on" } else { "off" }),
+            Level::Info,
+        );
     }
 
     fn set_kind_filter(&mut self, kind: Option<Kind>) {
@@ -1233,6 +1274,7 @@ impl App {
                 self.recompute();
                 self.set_status(format!("Sort: {}", self.sort.label()), Level::Info);
             }
+            Action::ToggleContentSearch => self.set_content_search(!self.content_search),
             Action::FilterAll => self.set_kind_filter(None),
             Action::FilterSkill => self.set_kind_filter(Some(Kind::Skill)),
             Action::FilterAgent => self.set_kind_filter(Some(Kind::Agent)),
@@ -1411,6 +1453,12 @@ impl App {
                     self.set_status("Usage: :theme dark|light|mono", Level::Error);
                 }
             }
+            "content" | "contents" => match argument.unwrap_or("toggle") {
+                "on" => self.set_content_search(true),
+                "off" => self.set_content_search(false),
+                "toggle" => self.set_content_search(!self.content_search),
+                _ => self.set_status("Usage: :content on|off|toggle", Level::Error),
+            },
             "warnings" => {
                 if self.warnings.is_empty() {
                     self.set_status("No warnings", Level::Success);
@@ -1438,6 +1486,7 @@ impl App {
                     self.keys = keys;
                     self.theme_preset_override = None;
                     self.show_preview = self.cfg.layout.show_preview;
+                    self.content_search = self.cfg.search.content;
                     self.static_warnings = warnings;
                     self.static_warnings.extend(key_warnings);
                     self.reload(false);
@@ -1825,6 +1874,36 @@ mod tests {
         app.on_key(ctrl(KeyCode::Char('r')));
         app.on_key(ctrl(KeyCode::Char('s')));
         assert!(fs::read_to_string(&path).unwrap().starts_with('X'));
+    }
+
+    #[test]
+    fn content_search_and_duplicate_detection() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill = dir.path().join("skills").join("demo");
+        fs::create_dir_all(&skill).unwrap();
+        let content =
+            "---\nname: demo\ndescription: Demo asset\n---\n\nRun the migration checklist.\n";
+        fs::write(skill.join("SKILL.md"), content).unwrap();
+        let agents = dir.path().join("agents");
+        fs::create_dir_all(&agents).unwrap();
+        fs::write(agents.join("demo.md"), content).unwrap();
+
+        let mut app = app_with_sources(dir.path());
+        assert_eq!(app.assets.len(), 2);
+        assert_eq!(app.duplicate_paths().len(), 1);
+        let current = app.current().unwrap().clone();
+        assert_eq!(app.duplicate_count(&current), 1);
+
+        app.query = "migration".into();
+        app.recompute();
+        assert!(app.filtered.is_empty());
+
+        app.on_key(key(KeyCode::Char('F')));
+        assert!(app.content_search);
+        assert_eq!(app.filtered.len(), 2);
+        app.on_key(key(KeyCode::Char('F')));
+        assert!(!app.content_search);
+        assert!(app.filtered.is_empty());
     }
 
     #[test]

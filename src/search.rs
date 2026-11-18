@@ -63,8 +63,15 @@ pub fn terms(query: &str) -> Vec<String> {
 
 /// Score an asset against the query terms. A term prefixed with `#` matches
 /// tags by substring; everything else is fuzzy-matched against name, kind,
-/// tags, and description. Returns `None` when any term fails.
-pub fn score(asset: &Asset, terms: &[String], matcher: &SkimMatcherV2) -> Option<i64> {
+/// tags, and description. With `content`, terms also match document bodies
+/// (case-insensitive substring), with a bonus when both match. Returns `None`
+/// when any term fails.
+pub fn score(
+    asset: &Asset,
+    terms: &[String],
+    matcher: &SkimMatcherV2,
+    content: bool,
+) -> Option<i64> {
     if terms.is_empty() {
         return Some(0);
     }
@@ -85,10 +92,60 @@ pub fn score(asset: &Asset, terms: &[String], matcher: &SkimMatcherV2) -> Option
             }
             total += 20;
         } else {
-            total += matcher.fuzzy_match(&haystack, term)?;
+            let metadata = matcher.fuzzy_match(&haystack, term);
+            let body = content.then(|| content_score(&asset.body, term)).flatten();
+            match (metadata, body) {
+                (None, None) => return None,
+                (Some(score), None) => total += score,
+                (None, Some(score)) => total += score,
+                (Some(metadata), Some(body)) => total += metadata + body,
+            }
         }
     }
     Some(total)
+}
+
+fn content_score(body: &str, term: &str) -> Option<i64> {
+    let needle = term.to_lowercase();
+    if needle.is_empty() {
+        return None;
+    }
+    let matches = body
+        .lines()
+        .filter(|line| line.to_lowercase().contains(&needle))
+        .count();
+    if matches == 0 {
+        None
+    } else {
+        Some(40 + (matches.min(10) as i64) * 2)
+    }
+}
+
+/// Terms used for body highlighting; tag filters (`#tag`) are metadata-only.
+pub fn content_terms(query: &str) -> Vec<String> {
+    terms(query)
+        .into_iter()
+        .filter(|term| !term.starts_with('#'))
+        .map(|term| term.to_lowercase())
+        .filter(|term| !term.is_empty())
+        .collect()
+}
+
+pub fn line_matches(line: &str, terms: &[String]) -> bool {
+    if terms.is_empty() {
+        return false;
+    }
+    let lower = line.to_lowercase();
+    terms.iter().any(|term| lower.contains(term))
+}
+
+pub fn matching_lines(body: &str, terms: &[String]) -> usize {
+    if terms.is_empty() {
+        return 0;
+    }
+    body.lines()
+        .filter(|line| line_matches(line, terms))
+        .count()
 }
 
 pub fn select(
@@ -96,6 +153,7 @@ pub fn select(
     kind: Option<Kind>,
     query: &str,
     sort: SortMode,
+    content: bool,
     matcher: &SkimMatcherV2,
 ) -> Vec<usize> {
     let terms = terms(query);
@@ -106,7 +164,7 @@ pub fn select(
         {
             continue;
         }
-        if let Some(score) = score(asset, &terms, matcher) {
+        if let Some(score) = score(asset, &terms, matcher, content) {
             rows.push((index, score));
         }
     }
@@ -174,6 +232,7 @@ mod tests {
             body: String::new(),
             modified: None,
             size: None,
+            fingerprint: 0,
         }
     }
 
@@ -214,6 +273,7 @@ mod tests {
             None,
             "deploy",
             SortMode::Kind,
+            false,
             &Fixture::matcher(),
         );
         assert_eq!(indices.len(), 1);
@@ -224,6 +284,7 @@ mod tests {
             None,
             "ops",
             SortMode::Kind,
+            false,
             &Fixture::matcher(),
         );
         assert_eq!(indices.len(), 2);
@@ -237,6 +298,7 @@ mod tests {
             None,
             "#ops",
             SortMode::Kind,
+            false,
             &Fixture::matcher(),
         );
         assert_eq!(indices.len(), 2);
@@ -245,6 +307,7 @@ mod tests {
             Some(Kind::Agent),
             "",
             SortMode::Name,
+            false,
             &Fixture::matcher(),
         );
         assert_eq!(indices, vec![1]);
@@ -253,6 +316,7 @@ mod tests {
             Some(Kind::Agent),
             "#ops",
             SortMode::Name,
+            false,
             &Fixture::matcher(),
         );
         assert!(indices.is_empty());
@@ -262,10 +326,42 @@ mod tests {
     fn sort_modes() {
         let fixture = Fixture::new();
         let matcher = Fixture::matcher();
-        let by_kind = select(&fixture.assets, None, "", SortMode::Kind, &matcher);
+        let by_kind = select(&fixture.assets, None, "", SortMode::Kind, false, &matcher);
         assert_eq!(by_kind, vec![0, 1, 2]);
-        let by_name = select(&fixture.assets, None, "", SortMode::Name, &matcher);
+        let by_name = select(&fixture.assets, None, "", SortMode::Name, false, &matcher);
         assert_eq!(by_name, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn content_search_matches_body_only_when_enabled() {
+        let mut fixture = Fixture::new();
+        fixture.assets[0].body = "# Deploy\nRun the migration checklist.".into();
+        let matcher = Fixture::matcher();
+
+        let indices = select(
+            &fixture.assets,
+            None,
+            "migration",
+            SortMode::Kind,
+            false,
+            &matcher,
+        );
+        assert!(indices.is_empty());
+
+        let indices = select(
+            &fixture.assets,
+            None,
+            "migration",
+            SortMode::Kind,
+            true,
+            &matcher,
+        );
+        assert_eq!(indices, vec![0]);
+
+        let terms = content_terms("migration #ops");
+        assert_eq!(terms, vec!["migration"]);
+        assert!(line_matches("Run the migration checklist.", &terms));
+        assert_eq!(matching_lines(&fixture.assets[0].body, &terms), 1);
     }
 
     #[test]

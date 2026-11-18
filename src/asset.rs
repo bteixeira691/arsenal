@@ -225,6 +225,8 @@ pub struct Asset {
     pub body: String,
     pub modified: Option<SystemTime>,
     pub size: Option<u64>,
+    /// Stable content fingerprint used to spot identical copies across roots.
+    pub fingerprint: u64,
 }
 
 impl Asset {
@@ -261,6 +263,7 @@ impl Asset {
         let modified = metadata.as_ref().and_then(|m| m.modified().ok());
         let size = metadata.as_ref().map(|m| m.len());
         let tags = frontmatter.tags();
+        let fingerprint = fingerprint(&bytes);
 
         Ok(Asset {
             path: path.to_path_buf(),
@@ -273,6 +276,7 @@ impl Asset {
             body: frontmatter.body,
             modified,
             size,
+            fingerprint,
         })
     }
 
@@ -285,6 +289,16 @@ impl Asset {
             self.description
         )
     }
+}
+
+fn fingerprint(bytes: &[u8]) -> u64 {
+    // FNV-1a: stable across builds and platforms.
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
 }
 
 fn summarize_body(body: &str) -> String {

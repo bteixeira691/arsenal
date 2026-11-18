@@ -103,6 +103,7 @@ below is remappable; see [Configuration](#configuration).
 | `n` / `N`   | Next / previous result (wraps)            |
 | `0`–`5`     | All kinds, skills, agents, commands, rules, snippets |
 | `s`         | Cycle sort: kind, name, modified, path    |
+| `F`         | Toggle content search (document bodies)   |
 | `t`         | Toggle the preview pane                   |
 | `T`         | Cycle theme: dark, light, mono            |
 | `a`         | Create an asset                           |
@@ -142,6 +143,18 @@ with `#` filters tags by substring:
 Results are ranked by match score; with an empty query the list follows the
 current sort mode. The header shows `visible/total assets` and the active kind
 filter.
+
+Press `F` (or `:content on`) to also search document bodies. Body matches are
+case-insensitive substrings, ranked below metadata matches; matching preview
+lines are underlined and the preview shows how many lines matched. Content
+search is session-toggled and defaults to `search.content` in the config.
+
+### Duplicate detection
+
+Arsenal fingerprints every file. Identical copies installed in several roots
+(for example `~/.claude/skills` and `~/.agents/skills`) show `×N` beside the
+name, and the preview lists the other paths. This is detection only; it never
+merges or deletes anything.
 
 ## Installing from GitHub
 
@@ -254,7 +267,7 @@ editor.
 
 ```text
 arsenal [--config PATH] [--root KIND=PATH]... [--query QUERY]
-arsenal list [--json] [--kind KIND] [--sort MODE]
+arsenal list [--json] [--kind KIND] [--sort MODE] [--content]
 arsenal install <URL|owner/repo> [--kind KIND] [--dest PATH] [--name NAME]
                 [--ref REF] [--subdir PATH] [--force]
 arsenal config path
@@ -290,6 +303,9 @@ args = ["+{line}", "{file}"]
 [layout]
 list_width = 38      # percent of the main area
 show_preview = true
+
+[search]
+content = false      # search document bodies by default (F toggles)
 
 [behavior]
 scan_depth = 4       # recursion for non-skill sources (1–12)
@@ -425,8 +441,8 @@ src/install.rs git cloning, URL parsing, asset resolution
 
 Unit tests cover frontmatter fallbacks, scanning, scaffolding, trash, fuzzy
 filtering, sorting, key sequences, UTF-8 text editing, form validation, delete
-confirmation, inline editing/save/undo, GitHub URL parsing, and
-install/force/ambiguity cases.
+confirmation, inline editing/save/undo, content search, duplicate detection,
+GitHub URL parsing, and install/force/ambiguity cases.
 
 ## License
 

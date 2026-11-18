@@ -18,6 +18,7 @@ pub const APP_NAME: &str = "arsenal";
 pub struct Config {
     pub editor: Editor,
     pub layout: LayoutCfg,
+    pub search: SearchCfg,
     pub behavior: Behavior,
     pub theme: ThemeSpec,
     pub keys: BTreeMap<String, String>,
@@ -29,6 +30,7 @@ impl Default for Config {
         Config {
             editor: Editor::default(),
             layout: LayoutCfg::default(),
+            search: SearchCfg::default(),
             behavior: Behavior::default(),
             theme: ThemeSpec::default(),
             keys: crate::keys::default_map(),
@@ -129,6 +131,13 @@ impl Default for LayoutCfg {
             show_preview: true,
         }
     }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SearchCfg {
+    /// Search document bodies in addition to names, tags, and descriptions.
+    pub content: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

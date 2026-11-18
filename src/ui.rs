@@ -8,6 +8,7 @@ use crate::app::{App, FormField, InstallField, Mode, TextInput};
 use crate::asset::{format_age, format_size};
 use crate::config::{Level, ResolvedTheme};
 use crate::keys::Action;
+use crate::search;
 
 const HELP_GROUPS: &[(&str, &[Action])] = &[
     (
@@ -52,6 +53,7 @@ const HELP_GROUPS: &[(&str, &[Action])] = &[
             Action::FilterRule,
             Action::FilterSnippet,
             Action::CycleSort,
+            Action::ToggleContentSearch,
             Action::TogglePreview,
             Action::CycleTheme,
         ],
@@ -114,9 +116,21 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
 fn search_bar(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
     let right_text = match app.mode {
-        Mode::Search => "enter keep · esc clear".to_string(),
+        Mode::Search => {
+            if app.content_search {
+                "content · enter keep · esc revert".to_string()
+            } else {
+                "enter keep · esc revert".to_string()
+            }
+        }
         Mode::Edit => "ctrl-s save · esc exit".to_string(),
-        _ => format!("sort {}", app.sort.label()),
+        _ => {
+            if app.content_search {
+                format!("content · sort {}", app.sort.label())
+            } else {
+                format!("sort {}", app.sort.label())
+            }
+        }
     };
     let right_width = (right_text.width() as u16 + 1).min(area.width / 2);
     let [left_area, right_area] =
@@ -364,6 +378,13 @@ fn asset_list(f: &mut Frame, area: Rect, app: &mut App, theme: &ResolvedTheme) {
                 Style::new().fg(Color::Reset).add_modifier(Modifier::BOLD),
             ),
         ];
+        let duplicates = app.duplicate_count(asset);
+        if duplicates > 0 {
+            spans.push(Span::styled(
+                format!(" ×{}", duplicates + 1),
+                Style::new().fg(theme.warning),
+            ));
+        }
         if !description.is_empty() {
             spans.push(Span::raw("  "));
             spans.push(Span::styled(description, Style::new().fg(theme.muted)));
@@ -379,6 +400,7 @@ fn asset_list(f: &mut Frame, area: Rect, app: &mut App, theme: &ResolvedTheme) {
 }
 
 fn preview(f: &mut Frame, area: Rect, app: &mut App, theme: &ResolvedTheme) {
+    let duplicates = app.duplicate_paths();
     let Some(asset) = app.current() else {
         let block = Block::default()
             .borders(Borders::ALL)
@@ -395,6 +417,13 @@ fn preview(f: &mut Frame, area: Rect, app: &mut App, theme: &ResolvedTheme) {
         );
         return;
     };
+
+    let match_terms = if app.content_search {
+        search::content_terms(&app.query)
+    } else {
+        Vec::new()
+    };
+    let match_lines = search::matching_lines(&asset.body, &match_terms);
 
     let title = truncate_width(&asset.name, area.width.saturating_sub(16) as usize);
     let block = Block::default()
@@ -478,6 +507,33 @@ fn preview(f: &mut Frame, area: Rect, app: &mut App, theme: &ResolvedTheme) {
         }
     }
 
+    if !duplicates.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            format!(
+                "identical copy{} in {} other location{}:",
+                if duplicates.len() == 1 { "" } else { "ies" },
+                duplicates.len(),
+                if duplicates.len() == 1 { "" } else { "s" }
+            ),
+            Style::new().fg(theme.warning),
+        )));
+        for path in duplicates.iter().take(4) {
+            lines.push(Line::from(Span::styled(
+                compact_path(path),
+                Style::new().fg(theme.muted),
+            )));
+        }
+    }
+
+    if match_lines > 0 {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            format!("content matches: {match_lines} line(s)"),
+            Style::new().fg(theme.warning).add_modifier(Modifier::BOLD),
+        )));
+    }
+
     lines.push(Line::from(Span::styled(
         "─".repeat(width.max(1)),
         Style::new().fg(theme.border),
@@ -489,7 +545,11 @@ fn preview(f: &mut Frame, area: Rect, app: &mut App, theme: &ResolvedTheme) {
         .position(|line| !line.trim().is_empty())
         .unwrap_or(body_lines.len());
     for line in body_lines.iter().skip(first).take(4000) {
-        lines.push(body_line(line, theme));
+        lines.push(body_line(
+            line,
+            theme,
+            search::line_matches(line, &match_terms),
+        ));
     }
 
     let wrap_width = inner.width.max(1) as usize;
@@ -518,33 +578,25 @@ fn preview(f: &mut Frame, area: Rect, app: &mut App, theme: &ResolvedTheme) {
     f.render_widget(paragraph, area);
 }
 
-fn body_line<'a>(line: &str, theme: &ResolvedTheme) -> Line<'a> {
+fn body_line<'a>(line: &str, theme: &ResolvedTheme, highlight: bool) -> Line<'a> {
     let trimmed = line.trim_start();
-    if trimmed.starts_with('#') {
-        return Line::from(Span::styled(
-            line.to_string(),
-            Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
-        ));
+    let mut style = if trimmed.starts_with('#') {
+        Style::new().fg(theme.accent).add_modifier(Modifier::BOLD)
+    } else if trimmed.starts_with("```")
+        || trimmed.starts_with("~~~")
+        || trimmed.starts_with("---")
+        || trimmed.starts_with("***")
+    {
+        Style::new().fg(theme.border)
+    } else if trimmed.starts_with('>') {
+        Style::new().fg(theme.muted).add_modifier(Modifier::ITALIC)
+    } else {
+        Style::new().fg(Color::Reset)
+    };
+    if highlight {
+        style = style.add_modifier(Modifier::UNDERLINED);
     }
-    if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-        return Line::from(Span::styled(
-            line.to_string(),
-            Style::new().fg(theme.border),
-        ));
-    }
-    if trimmed.starts_with("---") || trimmed.starts_with("***") {
-        return Line::from(Span::styled(
-            line.to_string(),
-            Style::new().fg(theme.border),
-        ));
-    }
-    if trimmed.starts_with('>') {
-        return Line::from(Span::styled(
-            line.to_string(),
-            Style::new().fg(theme.muted).add_modifier(Modifier::ITALIC),
-        ));
-    }
-    Line::from(line.to_string())
+    Line::from(Span::styled(line.to_string(), style))
 }
 
 fn status_bar(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
@@ -588,7 +640,7 @@ fn status_bar(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
         }
         Mode::Search => {
             spans.push(Span::styled(
-                " type to filter · enter keep · esc clear",
+                " type to filter · enter keep · esc revert",
                 Style::new().fg(theme.muted),
             ));
         }
@@ -1067,6 +1119,7 @@ fn help_modal(f: &mut Frame, area: Rect, app: &mut App, theme: &ResolvedTheme) {
         ":filter <kind|all> restrict the list",
         ":sort <mode>       kind | name | modified | path",
         ":theme <preset>    dark | light | mono",
+        ":content <on|off>  include document bodies in search",
         ":edit  :delete  :yank  :reveal  :rescan  :config  :warnings  :quit",
         ":inline            edit the selected document in-app",
     ] {

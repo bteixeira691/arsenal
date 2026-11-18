@@ -300,6 +300,7 @@ pub enum Action {
     TogglePreview,
     CycleTheme,
     CycleSort,
+    ToggleContentSearch,
     FilterAll,
     FilterSkill,
     FilterAgent,
@@ -309,7 +310,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 34] = [
+    pub const ALL: [Action; 35] = [
         Action::Quit,
         Action::Help,
         Action::Command,
@@ -338,6 +339,7 @@ impl Action {
         Action::TogglePreview,
         Action::CycleTheme,
         Action::CycleSort,
+        Action::ToggleContentSearch,
         Action::FilterAll,
         Action::FilterSkill,
         Action::FilterAgent,
@@ -376,6 +378,7 @@ impl Action {
             Action::TogglePreview => "toggle_preview",
             Action::CycleTheme => "cycle_theme",
             Action::CycleSort => "cycle_sort",
+            Action::ToggleContentSearch => "toggle_content_search",
             Action::FilterAll => "filter_all",
             Action::FilterSkill => "filter_skill",
             Action::FilterAgent => "filter_agent",
@@ -415,6 +418,7 @@ impl Action {
             Action::TogglePreview => "Toggle preview pane",
             Action::CycleTheme => "Cycle theme preset",
             Action::CycleSort => "Cycle sort order",
+            Action::ToggleContentSearch => "Search document contents",
             Action::FilterAll => "Show all kinds",
             Action::FilterSkill => "Show skills",
             Action::FilterAgent => "Show agents",
@@ -461,6 +465,7 @@ pub const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     (Action::TogglePreview, "t"),
     (Action::CycleTheme, "T"),
     (Action::CycleSort, "s"),
+    (Action::ToggleContentSearch, "F"),
     (Action::FilterAll, "0"),
     (Action::FilterSkill, "1"),
     (Action::FilterAgent, "2"),
