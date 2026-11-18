@@ -24,7 +24,7 @@ node packaging/winget/render.mjs \
 ```
 
 `--sha256 <hash>`, `--repo`, `--id`, `--publisher`, and `--out` are also
-available. Manifests are generated with schema 1.12.0, the version used by
+available. Manifests are generated with schema 1.10.0, the version used by
 current winget-pkgs manifests. Files are written to
 `packaging/winget/manifests/<id>/<version>/`.
 
