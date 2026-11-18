@@ -40,45 +40,48 @@ cd packaging/npm
 npm publish --access public
 ```
 
-Automatic publishing is opt-in: set the repository variable `PUBLISH_NPM` to
-`true` and the repository secret `NPM_TOKEN` to an npm token with publish
-rights. The release workflow's `publish-npm` job then publishes when the tag
-matches `package.json`. Without both, publish manually:
+Automatic publishing is opt-in per registry. On a `v*` tag, after the GitHub
+release exists:
+
+- `publish-bun` runs when `PUBLISH_BUN=true` and publishes `packaging/npm` with
+  Bun to the npm registry, using the `NPM_TOKEN` secret.
+- `publish-winget` runs when `PUBLISH_WINGET=true`, renders and validates the
+  portable Windows manifest from the released `.exe`, and opens the
+  `microsoft/winget-pkgs` PR with the `WINGET_TOKEN` secret.
+
+Enable both once from the repository root:
 
 ```sh
-cd packaging/npm
-npm publish --access public
+gh variable set PUBLISH_BUN --body true
+gh variable set PUBLISH_WINGET --body true
+gh secret set NPM_TOKEN            # granular npm token with publish rights
+gh secret set WINGET_TOKEN         # classic GitHub PAT with repo scope
 ```
 
-Enable pipeline publishing once from the repository root:
-
-```sh
-gh variable set PUBLISH_NPM --body true
-gh secret set NPM_TOKEN            # paste a granular npm token with publish rights
-```
-
-The token must allow publishing `arsenal-tui` and bypass 2FA for CI. The job
-fails if `PUBLISH_NPM` is true but `NPM_TOKEN` is missing instead of silently
-skipping. It runs only after the GitHub release assets exist, so `npx
-arsenal-tui` can download the binary immediately.
+The Bun job uses `NPM_CONFIG_TOKEN`; Bun has no `bun login`. The token must
+allow publishing `arsenal-tui` and bypass 2FA for CI. The winget job defaults to
+package ID `Bteixeira.Arsenal` and publisher `Bteixeira`; override with the
+`WINGET_PACKAGE_ID` and `WINGET_PUBLISHER` repository variables. Both jobs fail
+loudly if their switch is on but the corresponding secret is missing. They run
+only after the release assets exist, so `bun install -g arsenal-tui` can
+download the binary immediately.
 
 To release: bump both `Cargo.toml` and `packaging/npm/package.json`, commit,
 then push a `vX.Y.Z` tag. The workflow builds all binaries, publishes the
-release, checks the tag against `package.json`, and publishes the npm package.
+release, checks the tag against `package.json`, publishes with Bun, and opens
+the winget PR.
 
-Bun can publish the same package. Bun has no `bun login`, so authenticate once
-with `bunx npm login`, or provide a token:
+Manual publishing remains available:
 
 ```sh
-export NPM_CONFIG_TOKEN=npm_xxx
 cd packaging/npm
+export NPM_CONFIG_TOKEN=npm_xxx
 bun pm pack --dry-run     # inspect files without auth
 bun publish               # unscoped package is public by default
 ```
 
 `bun publish --tag next` handles prereleases. Do not pass `--provenance`: Bun
-1.3.x rejects it. The CI job uses `npm publish` because it runs with
-`actions/setup-node` and `NODE_AUTH_TOKEN`.
+1.3.x rejects it.
 
 Set `repository.url` in `packaging/npm/package.json` to the real repository
 before publishing; the launcher derives `owner/repo` from it. Override at runtime

@@ -53,9 +53,26 @@ winget install --id Bteixeira.Arsenal -e
 Publisher and package identifier are yours to choose; keep them consistent in
 the render command, the path under `manifests/`, and future releases.
 
+## Automatic tag flow
+
+The release workflow has a `publish-winget` job. It runs after the GitHub
+release on a `v*` tag when the repository variable `PUBLISH_WINGET` is `true`:
+
+1. Download the released Windows `.exe` and compute its SHA-256.
+2. Render the 1.28 manifests with `packaging/winget/render.mjs`.
+3. Run `winget validate`.
+4. Install `wingetcreate` and open the `microsoft/winget-pkgs` PR with the
+   `WINGET_TOKEN` repository secret.
+
+The package ID and publisher default to `Bteixeira.Arsenal` and `Bteixeira`;
+override them with the `WINGET_PACKAGE_ID` and `WINGET_PUBLISHER` repository
+variables. Complete the Microsoft CLA personally and follow validation labels
+on each PR.
+
 ## Manual GitHub Actions flow
 
-The `winget` workflow is manual and never runs on a tag:
+The `winget` workflow remains available for backfills and testing and never runs
+on a tag:
 
 1. Open **Actions → winget → Run workflow**.
 2. Enter the release version, package ID, and publisher.

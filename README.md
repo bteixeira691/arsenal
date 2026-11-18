@@ -37,7 +37,7 @@ arsenal --version
 `npm install -g arsenal-tui` works too. The first run downloads the matching
 release binary for the platform, verifies its SHA-256, and caches it. Supported:
 macOS arm64/x64, Linux arm64/x64 (glibc). The package is published from this
-repository with `npm publish`; see [packaging](packaging/README.md).
+repository with `bun publish`; see [packaging](packaging/README.md).
 
 ### Windows
 
@@ -64,7 +64,9 @@ For development, `cargo run -- --help`.
 
 Push a `v*` tag. The release workflow builds macOS arm64/x64, Linux arm64/x64,
 and Windows x64, writes `.sha256` files, and attaches them to the GitHub release.
-npm and winget publication steps are in [packaging](packaging/README.md).
+It then publishes the Bun/npm package and opens the winget PR when the
+`PUBLISH_BUN` and `PUBLISH_WINGET` repository variables and corresponding
+secrets are configured; see [packaging](packaging/README.md).
 
 ## Quick start
 
