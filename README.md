@@ -163,6 +163,8 @@ below is remappable; see [Configuration](#configuration).
 | `ctrl-f` / `ctrl-b` / `pgdn` / `pgup` | Page down / up      |
 | `J` / `K`   | Scroll preview down / up                  |
 | `/`         | Focus the always-visible search bar; `enter` keeps, `esc` reverts |
+| `ctrl-h`    | Focus the search bar                       |
+| `ctrl-l`    | Focus the preview pane                     |
 | `n` / `N`   | Next / previous result (wraps)            |
 | `0`–`5`     | All kinds, skills, agents, commands, rules, snippets |
 | `6`         | Sources tab                               |
@@ -189,9 +191,15 @@ below is remappable; see [Configuration](#configuration).
 `esc` clears the pending key sequence or the active search. Modals capture keys,
 so `a`, `d`, and friends are literal text there.
 
-Arrow keys, `home`/`end`, and `pageup`/`pagedown` always navigate the list, even
-if you remap the vim-style bindings. In dialogs they cycle choices and fields; in
-the editor they move the cursor. `[keys]` remaps the named actions only.
+With the preview focused (`ctrl-l`), the preview border and status chip turn
+accent-colored, `j`/`k` and the navigation keys scroll the preview instead of
+moving the asset selection, and `ctrl-h` returns to the search bar. `ctrl-h`
+from the asset list also opens the search bar.
+
+Arrow keys, `home`/`end`, and `pageup`/`pagedown` always navigate the list, or
+scroll the preview while it is focused, even if you remap the vim-style
+bindings. In dialogs they cycle choices and fields; in the editor they move the
+cursor. `[keys]` remaps the named actions only.
 
 ### Search
 

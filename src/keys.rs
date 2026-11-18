@@ -276,6 +276,8 @@ pub enum Action {
     Help,
     Command,
     Search,
+    FocusSearch,
+    FocusPreview,
     NextMatch,
     PrevMatch,
     Create,
@@ -313,11 +315,13 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 38] = [
+    pub const ALL: [Action; 40] = [
         Action::Quit,
         Action::Help,
         Action::Command,
         Action::Search,
+        Action::FocusSearch,
+        Action::FocusPreview,
         Action::NextMatch,
         Action::PrevMatch,
         Action::Create,
@@ -360,6 +364,8 @@ impl Action {
             Action::Help => "help",
             Action::Command => "command",
             Action::Search => "search",
+            Action::FocusSearch => "focus_search",
+            Action::FocusPreview => "focus_preview",
             Action::NextMatch => "next_match",
             Action::PrevMatch => "prev_match",
             Action::Create => "create",
@@ -403,6 +409,8 @@ impl Action {
             Action::Help => "Keymap help",
             Action::Command => "Command palette",
             Action::Search => "Fuzzy search",
+            Action::FocusSearch => "Focus search",
+            Action::FocusPreview => "Focus preview",
             Action::NextMatch => "Next match",
             Action::PrevMatch => "Previous match",
             Action::Create => "Create asset",
@@ -453,6 +461,8 @@ pub const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     (Action::Help, "?"),
     (Action::Command, ":"),
     (Action::Search, "/"),
+    (Action::FocusSearch, "ctrl-h"),
+    (Action::FocusPreview, "ctrl-l"),
     (Action::NextMatch, "n"),
     (Action::PrevMatch, "N"),
     (Action::Create, "a"),

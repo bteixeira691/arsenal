@@ -7,7 +7,7 @@ use ratatui::widgets::{
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::app::{App, FormField, InstallField, Mode, SourceField, TextInput, View};
+use crate::app::{App, Focus, FormField, InstallField, Mode, SourceField, TextInput, View};
 use crate::asset::{Kind, format_age, format_size};
 use crate::config::{Level, ResolvedTheme};
 use crate::install::Phase;
@@ -49,6 +49,8 @@ const HELP_GROUPS: &[(&str, &[Action])] = &[
         "Search & views",
         &[
             Action::Search,
+            Action::FocusSearch,
+            Action::FocusPreview,
             Action::NextMatch,
             Action::PrevMatch,
             Action::FilterAll,
@@ -78,7 +80,7 @@ const HELP_GROUPS: &[(&str, &[Action])] = &[
 pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
     let theme = app.theme();
-    if area.width < 24 || area.height < 6 {
+    if area.width < 24 || area.height < 9 {
         let notice = Paragraph::new(" Terminal too small for arsenal ")
             .style(Style::new().fg(theme.error))
             .alignment(Alignment::Center);
@@ -87,9 +89,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
 
     let tabs_height = if app.mode == Mode::Edit { 0 } else { 1 };
+    let search_height = if app.mode == Mode::Edit { 0 } else { 3 };
     let chunks = Layout::vertical([
         Constraint::Length(1),
-        Constraint::Length(1),
+        Constraint::Length(search_height),
         Constraint::Length(tabs_height),
         Constraint::Min(3),
         Constraint::Length(1),
@@ -97,7 +100,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     .split(area);
 
     header(f, chunks[0], app, &theme);
-    search_bar(f, chunks[1], app, &theme);
+    if search_height > 0 {
+        search_bar(f, chunks[1], app, &theme);
+    }
     if tabs_height > 0 {
         kind_tabs(f, chunks[2], app, &theme);
     }
@@ -145,44 +150,61 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 }
 
 fn search_bar(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
-    let right_text = match app.mode {
-        Mode::Search => {
-            if app.content_search {
-                "content · enter keep · esc revert".to_string()
-            } else {
-                "enter keep · esc revert".to_string()
-            }
-        }
-        Mode::Edit => "ctrl-s save · esc exit".to_string(),
-        _ if app.view == View::Sources => "A add · R rescan".to_string(),
-        _ => {
-            if app.content_search {
-                format!("content · sort {}", app.sort.label())
-            } else {
-                format!("sort {}", app.sort.label())
-            }
-        }
+    let focused = app.mode == Mode::Search;
+    let title = if app.view == View::Sources {
+        " Search sources "
+    } else {
+        " Search assets "
     };
-    let right_width = (right_text.width() as u16 + 1).min(area.width / 2);
+    let title_style = if focused {
+        Style::new().fg(theme.accent).add_modifier(Modifier::BOLD)
+    } else {
+        Style::new().fg(theme.muted)
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(if focused { theme.accent } else { theme.border }))
+        .title(Span::styled(title, title_style));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let compact = inner.width < 72;
+    let right_text = if compact {
+        String::new()
+    } else if focused {
+        "ctrl-l preview · enter keep · esc revert".to_string()
+    } else if app.mode == Mode::Normal && app.focus == Focus::Preview {
+        "ctrl-h search".to_string()
+    } else if app.content_search {
+        format!("/ focus · content · sort {}", app.sort.label())
+    } else {
+        format!("/ focus · sort {}", app.sort.label())
+    };
+    let right_width = (right_text.width() as u16 + 1).min(inner.width / 2);
     let [left_area, right_area] =
-        Layout::horizontal([Constraint::Min(10), Constraint::Length(right_width)]).areas(area);
+        Layout::horizontal([Constraint::Min(4), Constraint::Length(right_width)]).areas(inner);
 
     let mut spans = vec![Span::styled(
         " / ",
         Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
     )];
-    if app.mode == Mode::Search {
+    if focused {
         let budget = left_area.width.saturating_sub(3) as usize;
         spans.extend(input_spans_clipped(&app.input, theme, budget));
     } else if app.query.is_empty() {
-        spans.push(Span::styled(
-            if app.view == View::Sources {
-                "search sources  ( / to focus )"
+        let placeholder = if app.view == View::Sources {
+            if compact {
+                "Search sources…"
             } else {
-                "search assets  ( / to focus )"
-            },
-            Style::new().fg(theme.border),
-        ));
+                "Search source folders…"
+            }
+        } else if compact {
+            "Search skills…"
+        } else {
+            "Search skills, agents, commands, rules…"
+        };
+        spans.push(Span::styled(placeholder, Style::new().fg(theme.border)));
     } else {
         spans.push(Span::styled(
             app.query.clone(),
@@ -190,14 +212,16 @@ fn search_bar(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
         ));
     }
     f.render_widget(Paragraph::new(Line::from(spans)), left_area);
-    f.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            right_text,
-            Style::new().fg(theme.muted),
-        )))
-        .alignment(Alignment::Right),
-        right_area,
-    );
+    if right_width > 0 {
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!("{right_text} "),
+                Style::new().fg(theme.muted),
+            )))
+            .alignment(Alignment::Right),
+            right_area,
+        );
+    }
 }
 
 fn editor_view(f: &mut Frame, area: Rect, app: &mut App, theme: &ResolvedTheme) {
@@ -289,8 +313,9 @@ fn kind_tabs(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
     let mut labels: Vec<Line<'static>> = Vec::new();
     let mut add = |name: &str, count: usize| {
         labels.push(Line::from(vec![
-            Span::raw(name.to_string()),
-            Span::styled(format!(" {count}"), Style::new().fg(theme.border)),
+            Span::raw(format!(" {name} ")),
+            Span::styled(format!("{count}"), Style::new().fg(theme.border)),
+            Span::raw(" "),
         ]));
     };
     add("All", app.assets.len());
@@ -327,8 +352,8 @@ fn kind_tabs(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
     let tabs = Tabs::new(labels)
         .select(selected)
         .style(Style::new().fg(theme.muted))
-        .highlight_style(Style::new().fg(theme.accent).add_modifier(Modifier::BOLD))
-        .divider(Span::styled(" · ", Style::new().fg(theme.border)));
+        .highlight_style(theme.selection)
+        .divider(Span::styled(" ", Style::new().fg(theme.border)));
     f.render_widget(tabs, area);
 }
 
@@ -367,12 +392,8 @@ fn header(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
             " ARSENAL ",
             Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
         ),
-        Span::styled("· ", Style::new().fg(theme.border)),
+        Span::styled("  ", Style::new().fg(theme.border)),
         Span::styled(filter.to_string(), Style::new().fg(Color::Reset)),
-        Span::styled(
-            format!("  {}", compact_path(&app.config_path)),
-            Style::new().fg(theme.muted),
-        ),
         Span::styled(pending, Style::new().fg(theme.warning)),
     ]);
     f.render_widget(Paragraph::new(left), left_area);
@@ -746,11 +767,13 @@ fn asset_list(f: &mut Frame, area: Rect, app: &mut App, theme: &ResolvedTheme) {
 
 fn preview(f: &mut Frame, area: Rect, app: &mut App, theme: &ResolvedTheme) {
     let duplicates = app.duplicate_paths();
+    let focused = app.mode == Mode::Normal && app.focus == Focus::Preview;
+    let border_color = if focused { theme.accent } else { theme.border };
     let Some(asset) = app.current() else {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .border_style(Style::new().fg(theme.border))
+            .border_style(Style::new().fg(border_color))
             .title(Span::styled(" Preview ", Style::new().fg(theme.muted)));
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(
@@ -774,7 +797,7 @@ fn preview(f: &mut Frame, area: Rect, app: &mut App, theme: &ResolvedTheme) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(theme.border))
+        .border_style(Style::new().fg(border_color))
         .title(Line::from(vec![
             Span::styled(
                 " Preview ",
@@ -989,7 +1012,12 @@ fn status_bar(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
             .bg(theme.chip_bg)
             .add_modifier(Modifier::BOLD)
     };
-    let mut spans = vec![Span::styled(format!(" {} ", app.mode.label()), chip_style)];
+    let mode_label = if app.mode == Mode::Normal && app.focus == Focus::Preview {
+        "PREVIEW"
+    } else {
+        app.mode.label()
+    };
+    let mut spans = vec![Span::styled(format!(" {mode_label} "), chip_style)];
 
     match app.mode {
         Mode::Command => {
@@ -1005,7 +1033,7 @@ fn status_bar(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
         }
         Mode::Search => {
             spans.push(Span::styled(
-                " type to filter · enter keep · esc revert",
+                " typing filters live",
                 Style::new().fg(theme.muted),
             ));
         }
@@ -1058,25 +1086,43 @@ fn status_bar(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
             ));
         }
         Mode::Normal => {
-            for (keys, label) in [
-                ("/", "search"),
-                ("a", "new"),
-                ("i", "install"),
-                ("A", "source"),
-                ("6", "sources"),
-                ("enter", "edit"),
-                ("e", "external"),
-                ("d", "delete"),
-                ("?", "help"),
-            ] {
-                spans.push(Span::styled(
-                    format!("  {keys}"),
-                    Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
-                ));
-                spans.push(Span::styled(
-                    format!(" {label}"),
-                    Style::new().fg(theme.muted),
-                ));
+            if app.focus == Focus::Preview {
+                for (keys, label) in [
+                    ("j/k", "scroll"),
+                    ("g g/G", "top/bottom"),
+                    ("ctrl-h", "search"),
+                    ("q", "quit"),
+                ] {
+                    spans.push(Span::styled(
+                        format!("  {keys}"),
+                        Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+                    ));
+                    spans.push(Span::styled(
+                        format!(" {label}"),
+                        Style::new().fg(theme.muted),
+                    ));
+                }
+            } else {
+                for (keys, label) in [
+                    ("/", "search"),
+                    ("a", "new"),
+                    ("i", "install"),
+                    ("A", "source"),
+                    ("6", "sources"),
+                    ("enter", "edit"),
+                    ("e", "external"),
+                    ("d", "delete"),
+                    ("?", "help"),
+                ] {
+                    spans.push(Span::styled(
+                        format!("  {keys}"),
+                        Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+                    ));
+                    spans.push(Span::styled(
+                        format!(" {label}"),
+                        Style::new().fg(theme.muted),
+                    ));
+                }
             }
         }
     }

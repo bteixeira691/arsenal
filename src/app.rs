@@ -27,6 +27,13 @@ pub enum View {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Focus {
+    Search,
+    List,
+    Preview,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mode {
     Normal,
     Search,
@@ -517,6 +524,7 @@ pub struct App {
     pub filtered: Vec<usize>,
     pub selected: usize,
     pub view: View,
+    pub focus: Focus,
     pub source_selected: usize,
     pub query: String,
     pub kind_filter: Option<Kind>,
@@ -578,6 +586,7 @@ impl App {
             filtered: Vec::new(),
             selected: 0,
             view: View::Assets,
+            focus: Focus::List,
             source_selected: 0,
             query: String::new(),
             kind_filter: None,
@@ -1054,17 +1063,32 @@ impl App {
     }
 
     fn on_search(&mut self, key: KeyEvent) {
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
+            match key.code {
+                KeyCode::Char('l') => {
+                    self.focus_preview();
+                    return;
+                }
+                KeyCode::Char('h') => {
+                    self.focus = Focus::Search;
+                    return;
+                }
+                _ => {}
+            }
+        }
         match key.code {
             KeyCode::Esc => {
                 self.query = self.search_backup.clone();
                 self.input.set(&self.query);
                 self.recompute();
                 self.mode = Mode::Normal;
+                self.focus = Focus::List;
             }
             KeyCode::Enter => {
                 self.query = self.input.value.clone();
                 self.recompute();
                 self.mode = Mode::Normal;
+                self.focus = Focus::List;
             }
             KeyCode::Up => self.move_selection(-1, false),
             KeyCode::Down => self.move_selection(1, false),
@@ -1592,7 +1616,53 @@ impl App {
         }
     }
 
+    fn open_search(&mut self) {
+        self.mode = Mode::Search;
+        self.focus = Focus::Search;
+        self.search_backup = self.query.clone();
+        self.input.set(&self.query);
+        self.pending.clear();
+    }
+
+    fn focus_preview(&mut self) {
+        if !self.show_preview {
+            self.show_preview = true;
+        }
+        self.mode = Mode::Normal;
+        self.focus = Focus::Preview;
+        self.pending.clear();
+    }
+
+    fn preview_navigate(&mut self, action: Action) -> bool {
+        let page = self.list_height.max(1);
+        let next = match action {
+            Action::Down | Action::PreviewDown => self
+                .preview_scroll
+                .saturating_add(1)
+                .min(self.preview_max_scroll),
+            Action::Up | Action::PreviewUp => self.preview_scroll.saturating_sub(1),
+            Action::Top => 0,
+            Action::Bottom => self.preview_max_scroll,
+            Action::HalfPageDown => self
+                .preview_scroll
+                .saturating_add(page / 2)
+                .min(self.preview_max_scroll),
+            Action::HalfPageUp => self.preview_scroll.saturating_sub(page / 2),
+            Action::PageDown => self
+                .preview_scroll
+                .saturating_add(page)
+                .min(self.preview_max_scroll),
+            Action::PageUp => self.preview_scroll.saturating_sub(page),
+            _ => return false,
+        };
+        self.preview_scroll = next;
+        true
+    }
+
     fn run_action(&mut self, action: Action) {
+        if self.focus == Focus::Preview && self.preview_navigate(action) {
+            return;
+        }
         match action {
             Action::Quit => self.quit = true,
             Action::Help => {
@@ -1603,11 +1673,8 @@ impl App {
                 self.mode = Mode::Command;
                 self.input.clear();
             }
-            Action::Search => {
-                self.mode = Mode::Search;
-                self.search_backup = self.query.clone();
-                self.input.set(&self.query);
-            }
+            Action::Search | Action::FocusSearch => self.open_search(),
+            Action::FocusPreview => self.focus_preview(),
             Action::NextMatch => self.move_selection(1, true),
             Action::PrevMatch => self.move_selection(-1, true),
             Action::Create => {
@@ -1626,6 +1693,7 @@ impl App {
             Action::ShowSources => {
                 self.view = View::Sources;
                 self.mode = Mode::Normal;
+                self.focus = Focus::List;
                 self.clamp_source_selection();
                 self.ensure_visible();
             }
@@ -1738,6 +1806,9 @@ impl App {
             }
             Action::TogglePreview => {
                 self.show_preview = !self.show_preview;
+                if !self.show_preview && self.focus == Focus::Preview {
+                    self.focus = Focus::List;
+                }
                 self.set_status(
                     format!(
                         "Preview {}",
@@ -2136,6 +2207,46 @@ mod tests {
         assert_eq!(app.query, "review");
         assert_eq!(app.filtered.len(), 1);
         assert_eq!(app.current().unwrap().name, "reviewer");
+    }
+
+    #[test]
+    fn ctrl_h_and_ctrl_l_move_between_search_and_preview() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill = dir.path().join("skills").join("deploy");
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: deploy\ndescription: Deploy services\n---\n",
+        )
+        .unwrap();
+        let mut app = app_with_sources(dir.path());
+        app.preview_max_scroll = 20;
+
+        app.on_key(key(KeyCode::Char('/')));
+        type_text(&mut app, "deploy");
+        assert_eq!(app.focus, Focus::Search);
+
+        let selected = app.selected;
+        app.on_key(ctrl(KeyCode::Char('l')));
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.focus, Focus::Preview);
+        assert_eq!(app.selected, selected);
+        app.on_key(key(KeyCode::Char('j')));
+        assert_eq!(app.preview_scroll, 1);
+        assert_eq!(app.selected, selected);
+
+        app.on_key(ctrl(KeyCode::Char('h')));
+        assert_eq!(app.mode, Mode::Search);
+        assert_eq!(app.focus, Focus::Search);
+        assert_eq!(app.input.value, "deploy");
+        app.on_key(key(KeyCode::Esc));
+        assert_eq!(app.focus, Focus::List);
+
+        app.on_key(ctrl(KeyCode::Char('l')));
+        assert_eq!(app.focus, Focus::Preview);
+        app.on_key(key(KeyCode::Char('t')));
+        assert!(!app.show_preview);
+        assert_eq!(app.focus, Focus::List);
     }
 
     #[test]
