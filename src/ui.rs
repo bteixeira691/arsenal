@@ -1246,10 +1246,15 @@ fn form_modal(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
     ));
 
     let mut source_spans = vec![Span::styled(format!("{:<12}", "source"), label)];
-    let source_value = form
-        .source(&app.cfg)
-        .map(|source| source.display_with_path())
-        .unwrap_or_else(|| "— no source configured —".to_string());
+    let source_value = if form.source_chosen {
+        form.source(&app.cfg)
+            .map(|source| source.display_with_path())
+            .unwrap_or_else(|| "— no source configured —".to_string())
+    } else if form.source_options.is_empty() {
+        "— no source configured —".to_string()
+    } else {
+        "choose integration".to_string()
+    };
     let source_width = inner.width.saturating_sub(13) as usize;
     let source_value = truncate_width(&source_value, source_width);
     if form.focus == FormField::Source {
@@ -1422,10 +1427,15 @@ fn install_modal(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
     }
     lines.push(Line::from(kind_spans));
 
-    let source_value = form
-        .source(&app.cfg)
-        .map(|source| source.display_with_path())
-        .unwrap_or_else(|| "— no source configured for this kind —".to_string());
+    let source_value = if form.source_chosen {
+        form.source(&app.cfg)
+            .map(|source| source.display_with_path())
+            .unwrap_or_else(|| "— no source configured for this kind —".to_string())
+    } else if form.source_options.is_empty() {
+        "— no source configured for this kind —".to_string()
+    } else {
+        "choose integration".to_string()
+    };
     let source_value = truncate_width(&source_value, field_width);
     let mut source_spans = vec![Span::styled(format!("{:<10}", "source"), label)];
     if form.focus == InstallField::Source {

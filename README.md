@@ -283,9 +283,11 @@ Behavior:
 - Agents, commands, rules, and snippets install a single `*.md` file. The
   resolver prefers `--name.md`, then `<repo>.md`, then the only non-README
   Markdown file in the selected directory.
-- The destination defaults to the OMP-native source (`~/.omp/agent/<kind>s`) if
-  configured, otherwise the first configured source for the kind. Choose another
-  integration in the install form or pass `--dest`.
+- The CLI destination defaults to the OMP-native source
+  (`~/.omp/agent/<kind>s`) if configured, otherwise the first configured source
+  for the kind. In the TUI, the install form starts as `choose integration`
+  whenever more than one destination source exists, so each clone must name its
+  target. Use `--dest` for scripted installs.
 - omp reads its native roots directly. It only reads foreign `~/.claude` user
   skills when `~/.omp/agent/config.yml` opts in:
 
@@ -307,12 +309,15 @@ Behavior:
 │ kind        skill                                      │
 │ name        incident-runbook                           │
 │ description Step-by-step incident response for on-call │
-│ source      ~/.claude/skills                           │
+│ source      choose integration                         │
 │ enter creates the file; tab cycles fields               │
 ╰────────────────────────────────────────────────────────╯
 ```
 
 - `tab` / `shift-tab` move between fields; `←`/`→` change kind and source.
+- When more than one destination source exists, `source` starts as
+  `choose integration` and must be selected explicitly. An arrow key selects the
+  first integration; press again to cycle. With a single source it is preselected.
 - `enter` validates and writes the file, then selects it.
 - Names are slugified (`Team Deploy` → `team-deploy`); existing files are never
   overwritten.

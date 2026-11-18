@@ -236,6 +236,7 @@ pub struct Form {
     pub description: TextInput,
     pub source_options: Vec<usize>,
     pub source_pos: usize,
+    pub source_chosen: bool,
     pub focus: FormField,
     pub error: Option<String>,
 }
@@ -248,6 +249,7 @@ impl Form {
             description: TextInput::default(),
             source_options: Vec::new(),
             source_pos: 0,
+            source_chosen: false,
             focus: FormField::Name,
             error: None,
         };
@@ -263,16 +265,19 @@ impl Form {
             .filter(|(_, source)| source.kind == self.kind)
             .map(|(index, _)| index)
             .collect();
-        self.source_pos = preferred
-            .and_then(|path| {
-                self.source_options
-                    .iter()
-                    .position(|&index| cfg.sources[index].path == path)
-            })
-            .unwrap_or(0);
+        let preferred_pos = preferred.and_then(|path| {
+            self.source_options
+                .iter()
+                .position(|&index| cfg.sources[index].path == path)
+        });
+        self.source_pos = preferred_pos.unwrap_or(0);
+        self.source_chosen = preferred_pos.is_some() || self.source_options.len() == 1;
     }
 
     pub fn source<'a>(&self, cfg: &'a Config) -> Option<&'a Source> {
+        if !self.source_chosen {
+            return None;
+        }
         self.source_options
             .get(self.source_pos)
             .map(|&index| &cfg.sources[index])
@@ -289,8 +294,13 @@ impl Form {
             FormField::Source => {
                 let len = self.source_options.len();
                 if len > 0 {
-                    let next = (self.source_pos as i32 + delta).rem_euclid(len as i32);
-                    self.source_pos = next as usize;
+                    if !self.source_chosen {
+                        self.source_chosen = true;
+                        self.source_pos = if delta < 0 { len - 1 } else { 0 };
+                    } else {
+                        let next = (self.source_pos as i32 + delta).rem_euclid(len as i32);
+                        self.source_pos = next as usize;
+                    }
                 }
             }
             _ => {}
@@ -339,6 +349,7 @@ pub struct InstallForm {
     pub kind: Kind,
     pub source_options: Vec<usize>,
     pub source_pos: usize,
+    pub source_chosen: bool,
     pub name: TextInput,
     pub focus: InstallField,
     pub error: Option<String>,
@@ -351,6 +362,7 @@ impl InstallForm {
             kind,
             source_options: Vec::new(),
             source_pos: 0,
+            source_chosen: false,
             name: TextInput::default(),
             focus: InstallField::Url,
             error: None,
@@ -367,20 +379,19 @@ impl InstallForm {
             .filter(|(_, source)| source.kind == self.kind)
             .map(|(index, _)| index)
             .collect();
-        let preferred = preferred.or_else(|| {
-            cfg.install_source(self.kind)
-                .map(|source| source.path.as_str())
+        let preferred_pos = preferred.and_then(|path| {
+            self.source_options
+                .iter()
+                .position(|&index| cfg.sources[index].path == path)
         });
-        self.source_pos = preferred
-            .and_then(|path| {
-                self.source_options
-                    .iter()
-                    .position(|&index| cfg.sources[index].path == path)
-            })
-            .unwrap_or(0);
+        self.source_pos = preferred_pos.unwrap_or(0);
+        self.source_chosen = preferred_pos.is_some() || self.source_options.len() == 1;
     }
 
     pub fn source<'a>(&self, cfg: &'a Config) -> Option<&'a Source> {
+        if !self.source_chosen {
+            return None;
+        }
         self.source_options
             .get(self.source_pos)
             .map(|&index| &cfg.sources[index])
@@ -397,8 +408,13 @@ impl InstallForm {
             InstallField::Source => {
                 let len = self.source_options.len();
                 if len > 0 {
-                    let next = (self.source_pos as i32 + delta).rem_euclid(len as i32);
-                    self.source_pos = next as usize;
+                    if !self.source_chosen {
+                        self.source_chosen = true;
+                        self.source_pos = if delta < 0 { len - 1 } else { 0 };
+                    } else {
+                        let next = (self.source_pos as i32 + delta).rem_euclid(len as i32);
+                        self.source_pos = next as usize;
+                    }
                 }
             }
             _ => {}
@@ -1223,11 +1239,15 @@ impl App {
             return;
         }
         let Some(source) = form.source(&self.cfg).cloned() else {
-            form.error = Some(format!(
-                "No source configured for {}s. Add a [[sources]] entry with kind = \"{}\".",
-                form.kind.plural(),
-                form.kind.as_str()
-            ));
+            form.error = Some(if form.source_options.is_empty() {
+                format!(
+                    "No source configured for {}s. Add a [[sources]] entry with kind = \"{}\".",
+                    form.kind.plural(),
+                    form.kind.as_str()
+                )
+            } else {
+                "Choose an integration for the destination.".into()
+            });
             form.focus = InstallField::Source;
             self.install = Some(form);
             return;
@@ -1892,11 +1912,15 @@ impl App {
             return;
         }
         let Some(source) = form.source(&self.cfg).cloned() else {
-            form.error = Some(format!(
-                "No source configured for {}s. Add a [[sources]] entry with kind = \"{}\".",
-                form.kind.plural(),
-                form.kind.as_str()
-            ));
+            form.error = Some(if form.source_options.is_empty() {
+                format!(
+                    "No source configured for {}s. Add a [[sources]] entry with kind = \"{}\".",
+                    form.kind.plural(),
+                    form.kind.as_str()
+                )
+            } else {
+                "Choose an integration for the destination.".into()
+            });
             form.focus = FormField::Source;
             self.form = Some(form);
             return;
@@ -2418,6 +2442,33 @@ mod tests {
         assert_eq!(app.mode, Mode::Normal);
         assert!(app.query.is_empty());
         assert_eq!(app.current().unwrap().name, "fresh-skill");
+    }
+
+    #[test]
+    fn multiple_integrations_require_an_explicit_destination() {
+        let cfg = Config {
+            sources: vec![
+                Source::new(Kind::Skill, "~/.omp/agent/skills"),
+                Source::new(Kind::Skill, "~/.claude/skills"),
+                Source::new(Kind::Skill, "~/.config/opencode/skills"),
+            ],
+            ..Config::default()
+        };
+        let mut create = Form::new(&cfg, Kind::Skill);
+        assert!(!create.source_chosen);
+        assert!(create.source(&cfg).is_none());
+        create.focus = FormField::Source;
+        create.cycle(&cfg, 1);
+        assert!(create.source_chosen);
+        assert_eq!(create.source(&cfg).unwrap().path, "~/.omp/agent/skills");
+
+        let mut install = InstallForm::new(&cfg, Kind::Skill);
+        assert!(!install.source_chosen);
+        assert!(install.source(&cfg).is_none());
+        install.focus = InstallField::Source;
+        install.cycle(&cfg, 1);
+        assert!(install.source_chosen);
+        assert_eq!(install.source(&cfg).unwrap().path, "~/.omp/agent/skills");
     }
 
     #[test]
