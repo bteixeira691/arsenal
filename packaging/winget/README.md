@@ -6,7 +6,7 @@ directory generates and documents that submission.
 
 ## 1. Publish a GitHub release
 
-Push a tag (`v0.4.1`). `.github/workflows/release.yml` builds
+Push a tag (`v0.5.0`). `.github/workflows/release.yml` builds
 `arsenal-x86_64-pc-windows-msvc.exe` and its `.sha256` and attaches both to the
 release.
 
@@ -15,7 +15,7 @@ release.
 Download the checksum from the release, then render:
 
 ```sh
-VERSION=0.4.1 \
+VERSION=0.5.0 \
 REPO=<owner>/arsenal \
 WINGET_ID=Bteixeira.Arsenal \
 PUBLISHER=Bteixeira \
@@ -30,8 +30,8 @@ available. Files are written to
 ## 3. Validate on Windows
 
 ```powershell
-winget validate --manifest packaging\winget\manifests\Bteixeira.Arsenal\0.4.1
-winget install --manifest packaging\winget\manifests\Bteixeira.Arsenal\0.4.1
+winget validate --manifest packaging\winget\manifests\Bteixeira.Arsenal\0.5.0
+winget install --manifest packaging\winget\manifests\Bteixeira.Arsenal\0.5.0
 ```
 
 Local `--manifest` installs work before submission; `--id` installs require the
@@ -42,7 +42,7 @@ package to be accepted into the winget repository.
 1. Fork `microsoft/winget-pkgs`.
 2. Copy the version folder to
    `manifests/b/<Publisher>/<Package>/<version>/`
-   (for this example: `manifests/b/Bteixeira/Arsenal/0.4.1/`).
+   (for this example: `manifests/b/Bteixeira/Arsenal/0.5.0/`).
 3. Open a PR. Once merged:
 
 ```powershell

@@ -22,8 +22,8 @@ arsenal-x86_64-pc-windows-msvc.exe
 ## Release
 
 ```sh
-git tag v0.4.1
-git push origin v0.4.1
+git tag v0.5.0
+git push origin v0.5.0
 ```
 
 `.github/workflows/release.yml` builds all targets, writes checksums, and
@@ -66,7 +66,7 @@ bun install -g /absolute/path/to/arsenal/packaging/npm
 See [winget/README.md](winget/README.md). After a release exists:
 
 ```sh
-VERSION=0.4.1 REPO=<owner>/arsenal \
+VERSION=0.5.0 REPO=<owner>/arsenal \
   node packaging/winget/render.mjs \
   --sha256-file arsenal-x86_64-pc-windows-msvc.exe.sha256
 ```

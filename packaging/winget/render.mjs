@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 // Render winget manifests for a published GitHub release.
 //
-//   SHA256=<hash> VERSION=0.4.1 REPO=bteixeira691/arsenal node packaging/winget/render.mjs
+//   SHA256=<hash> VERSION=0.5.0 REPO=bteixeira691/arsenal node packaging/winget/render.mjs
 //
 // Then validate on Windows with:
-//   winget validate --manifest packaging/winget/manifests/Bteixeira.Arsenal/0.4.1
+//   winget validate --manifest packaging/winget/manifests/Bteixeira.Arsenal/0.5.0
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
