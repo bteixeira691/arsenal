@@ -50,6 +50,22 @@ cd packaging/npm
 npm publish --access public
 ```
 
+Enable pipeline publishing once from the repository root:
+
+```sh
+gh variable set PUBLISH_NPM --body true
+gh secret set NPM_TOKEN            # paste a granular npm token with publish rights
+```
+
+The token must allow publishing `arsenal-tui` and bypass 2FA for CI. The job
+fails if `PUBLISH_NPM` is true but `NPM_TOKEN` is missing instead of silently
+skipping. It runs only after the GitHub release assets exist, so `npx
+arsenal-tui` can download the binary immediately.
+
+To release: bump both `Cargo.toml` and `packaging/npm/package.json`, commit,
+then push a `vX.Y.Z` tag. The workflow builds all binaries, publishes the
+release, checks the tag against `package.json`, and publishes the npm package.
+
 Bun can publish the same package. Bun has no `bun login`, so authenticate once
 with `bunx npm login`, or provide a token:
 

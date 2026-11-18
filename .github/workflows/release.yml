@@ -112,8 +112,15 @@ jobs:
         with:
           node-version: 20
           registry-url: https://registry.npmjs.org
+      - name: Require npm token
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NPM_TOKEN" ]; then
+            echo "::error::PUBLISH_NPM is true but the NPM_TOKEN secret is missing."
+            exit 1
+          fi
       - name: Check version matches tag
-        if: env.NODE_AUTH_TOKEN != ''
         working-directory: packaging/npm
         run: |
           node -e '
@@ -124,6 +131,5 @@ jobs:
             }
           '
       - name: Publish to npm
-        if: env.NODE_AUTH_TOKEN != ''
         working-directory: packaging/npm
         run: npm publish --access public
