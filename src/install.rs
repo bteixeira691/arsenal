@@ -6,8 +6,9 @@
 //! temporary clone is always removed.
 
 use std::fs;
+use std::io::Read;
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, bail};
 use walkdir::WalkDir;
@@ -36,6 +37,31 @@ pub struct Installed {
     pub kind: Kind,
     pub name: String,
     pub files: usize,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Phase {
+    Clone,
+    Resolve,
+    Copy,
+    Done,
+}
+
+#[derive(Clone, Debug)]
+pub struct Progress {
+    pub phase: Phase,
+    pub percent: Option<u8>,
+    pub detail: String,
+}
+
+impl Progress {
+    pub fn start(detail: impl Into<String>) -> Self {
+        Progress {
+            phase: Phase::Clone,
+            percent: None,
+            detail: detail.into(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -144,6 +170,13 @@ pub fn repo_name(clone_url: &str) -> String {
 }
 
 pub fn install(request: &Request) -> Result<Installed> {
+    install_with_progress(request, &mut |_| {})
+}
+
+pub fn install_with_progress(
+    request: &Request,
+    progress: &mut dyn FnMut(Progress),
+) -> Result<Installed> {
     let parsed = parse_url(&request.url)?;
     let reference = request
         .reference
@@ -159,9 +192,24 @@ pub fn install(request: &Request) -> Result<Installed> {
         validate_ref(reference)?;
     }
 
+    progress(Progress {
+        phase: Phase::Clone,
+        percent: None,
+        detail: format!("cloning {}", parsed.clone_url),
+    });
     let workspace = tempfile::tempdir().context("creating a temporary directory")?;
-    clone_repo(&parsed.clone_url, reference.as_deref(), workspace.path())?;
+    clone_repo(
+        &parsed.clone_url,
+        reference.as_deref(),
+        workspace.path(),
+        progress,
+    )?;
     let repo_root = workspace.path();
+    progress(Progress {
+        phase: Phase::Resolve,
+        percent: None,
+        detail: "locating the asset".into(),
+    });
     let base = match subdir.as_deref() {
         Some(subdir) => join_subdir(repo_root, subdir)?,
         None => repo_root.to_path_buf(),
@@ -224,6 +272,11 @@ pub fn install(request: &Request) -> Result<Installed> {
         asset::trash_path(&destination, &trash).map_err(anyhow::Error::msg)?;
     }
 
+    progress(Progress {
+        phase: Phase::Copy,
+        percent: None,
+        detail: format!("copying to {}", destination.display()),
+    });
     let files = if is_skill {
         asset::copy_tree(&source, &destination).map_err(anyhow::Error::msg)?
     } else {
@@ -238,6 +291,11 @@ pub fn install(request: &Request) -> Result<Installed> {
         );
     }
 
+    progress(Progress {
+        phase: Phase::Done,
+        percent: Some(100),
+        detail: format!("installed {} file(s)", files),
+    });
     Ok(Installed {
         path: destination,
         kind: request.kind,
@@ -301,8 +359,13 @@ fn join_subdir(root: &Path, subdir: &str) -> Result<PathBuf> {
     Ok(root.join(relative))
 }
 
-fn clone_repo(url: &str, reference: Option<&str>, destination: &Path) -> Result<()> {
-    if let Err(error) = attempt_shallow_clone(url, reference, destination) {
+fn clone_repo(
+    url: &str,
+    reference: Option<&str>,
+    destination: &Path,
+    progress: &mut dyn FnMut(Progress),
+) -> Result<()> {
+    if let Err(error) = attempt_shallow_clone(url, reference, destination, progress) {
         if reference.is_none() {
             return Err(error);
         }
@@ -310,15 +373,12 @@ fn clone_repo(url: &str, reference: Option<&str>, destination: &Path) -> Result<
         // clone. The failed attempt may have left a partial directory behind.
         let _ = fs::remove_dir_all(destination);
         fs::create_dir_all(destination)?;
-        let status = Command::new("git")
-            .arg("clone")
-            .arg(url)
-            .arg(destination)
-            .status()
-            .with_context(|| "running `git clone` (is git installed?)")?;
-        if !status.success() {
-            bail!("git clone failed for `{url}`");
-        }
+        progress(Progress {
+            phase: Phase::Clone,
+            percent: None,
+            detail: "retrying with a full clone".into(),
+        });
+        run_clone_command(url, None, None, destination, progress)?;
         let reference = reference.expect("checked above");
         let status = Command::new("git")
             .arg("-C")
@@ -334,24 +394,95 @@ fn clone_repo(url: &str, reference: Option<&str>, destination: &Path) -> Result<
     Ok(())
 }
 
-fn attempt_shallow_clone(url: &str, reference: Option<&str>, destination: &Path) -> Result<()> {
+fn attempt_shallow_clone(
+    url: &str,
+    reference: Option<&str>,
+    destination: &Path,
+    progress: &mut dyn FnMut(Progress),
+) -> Result<()> {
+    run_clone_command(url, Some("1"), reference, destination, progress)
+}
+
+fn run_clone_command(
+    url: &str,
+    depth: Option<&str>,
+    reference: Option<&str>,
+    destination: &Path,
+    progress: &mut dyn FnMut(Progress),
+) -> Result<()> {
     let mut command = Command::new("git");
-    command
-        .arg("clone")
-        .arg("--depth")
-        .arg("1")
-        .arg("--no-tags");
+    command.arg("clone").arg("--progress");
+    if let Some(depth) = depth {
+        command.arg("--depth").arg(depth).arg("--no-tags");
+    }
     if let Some(reference) = reference {
         command.arg("--branch").arg(reference);
     }
-    command.arg(url).arg(destination);
-    let status = command
-        .status()
+    command
+        .arg(url)
+        .arg(destination)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+
+    let mut child = command
+        .spawn()
         .with_context(|| "running `git clone` (is git installed?)")?;
+    if let Some(stderr) = child.stderr.take() {
+        stream_progress(stderr, progress);
+    }
+    let status = child.wait().context("waiting for `git clone`")?;
     if !status.success() {
         bail!("git clone failed for `{url}`");
     }
     Ok(())
+}
+
+fn stream_progress(mut reader: impl Read, progress: &mut dyn FnMut(Progress)) {
+    let mut pending = String::new();
+    let mut buffer = [0u8; 2048];
+    loop {
+        match reader.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => {
+                pending.push_str(&String::from_utf8_lossy(&buffer[..read]));
+                while let Some(index) = pending.find(['\r', '\n']) {
+                    let line = pending[..index].trim().to_string();
+                    pending.drain(..=index);
+                    emit_progress_line(&line, progress);
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    let line = pending.trim();
+    if !line.is_empty() {
+        emit_progress_line(line, progress);
+    }
+}
+
+fn emit_progress_line(line: &str, progress: &mut dyn FnMut(Progress)) {
+    if line.is_empty() {
+        return;
+    }
+    progress(Progress {
+        phase: Phase::Clone,
+        percent: parse_percent(line),
+        detail: line.to_string(),
+    });
+}
+
+fn parse_percent(line: &str) -> Option<u8> {
+    let percent_index = line.find('%')?;
+    let prefix = &line[..percent_index];
+    let digits: String = prefix
+        .chars()
+        .rev()
+        .take_while(|character| character.is_ascii_digit())
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    digits.parse::<u8>().ok().map(|value| value.min(100))
 }
 
 fn resolve_skill(base: &Path, requested_name: Option<&str>, repo_root: &Path) -> Result<PathBuf> {
@@ -754,6 +885,34 @@ mod tests {
             .filter_map(Result::ok)
             .any(|entry| entry.file_name() == "demo");
         assert!(trash);
+    }
+
+    #[test]
+    fn parses_git_progress_percentages() {
+        assert_eq!(
+            parse_percent("Receiving objects:  42% (42/100), 1.00 MiB"),
+            Some(42)
+        );
+        assert_eq!(parse_percent("Resolving deltas: 100% (10/10)"), Some(100));
+        assert_eq!(parse_percent("Cloning into 'repo'..."), None);
+        assert_eq!(parse_percent("Receiving objects: 101%"), Some(100));
+    }
+
+    #[test]
+    fn install_reports_progress_phases() {
+        let repo = repo_with(&[("SKILL.md", "---\nname: demo\ndescription: x\n---\n")]);
+        let dest = tempfile::tempdir().unwrap();
+        let request = request(
+            &format!("file://{}/", repo.path().display()),
+            Kind::Skill,
+            dest.path(),
+        );
+        let mut phases = Vec::new();
+        install_with_progress(&request, &mut |progress| phases.push(progress.phase)).unwrap();
+        assert!(phases.contains(&Phase::Clone), "{phases:?}");
+        assert!(phases.contains(&Phase::Resolve), "{phases:?}");
+        assert!(phases.contains(&Phase::Copy), "{phases:?}");
+        assert_eq!(phases.last(), Some(&Phase::Done));
     }
 
     #[test]

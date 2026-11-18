@@ -50,6 +50,20 @@ cd packaging/npm
 npm publish --access public
 ```
 
+Bun can publish the same package. Bun has no `bun login`, so authenticate once
+with `bunx npm login`, or provide a token:
+
+```sh
+export NPM_CONFIG_TOKEN=npm_xxx
+cd packaging/npm
+bun pm pack --dry-run     # inspect files without auth
+bun publish               # unscoped package is public by default
+```
+
+`bun publish --tag next` handles prereleases. Do not pass `--provenance`: Bun
+1.3.x rejects it. The CI job uses `npm publish` because it runs with
+`actions/setup-node` and `NODE_AUTH_TOKEN`.
+
 Set `repository.url` in `packaging/npm/package.json` to the real repository
 before publishing; the launcher derives `owner/repo` from it. Override at runtime
 with `ARSENAL_REPO=owner/repo` if needed. `ARSENAL_BINARY` bypasses downloads for

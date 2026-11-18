@@ -1,12 +1,16 @@
 //! Rendering: header, asset list, preview, statusline, and modal dialogs.
 
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Wrap};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Clear, Gauge, List, ListItem, Paragraph, Scrollbar,
+    ScrollbarOrientation, ScrollbarState, Tabs, Wrap,
+};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::app::{App, FormField, InstallField, Mode, SourceField, TextInput};
-use crate::asset::{format_age, format_size};
+use crate::app::{App, FormField, InstallField, Mode, SourceField, TextInput, View};
+use crate::asset::{Kind, format_age, format_size};
 use crate::config::{Level, ResolvedTheme};
+use crate::install::Phase;
 use crate::keys::Action;
 use crate::search;
 
@@ -55,13 +59,19 @@ const HELP_GROUPS: &[(&str, &[Action])] = &[
             Action::FilterSnippet,
             Action::CycleSort,
             Action::ToggleContentSearch,
+            Action::ShowSources,
             Action::TogglePreview,
             Action::CycleTheme,
         ],
     ),
     (
         "Application",
-        &[Action::Help, Action::Command, Action::Quit],
+        &[
+            Action::Help,
+            Action::Command,
+            Action::EditKeymap,
+            Action::Quit,
+        ],
     ),
 ];
 
@@ -76,9 +86,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         return;
     }
 
+    let tabs_height = if app.mode == Mode::Edit { 0 } else { 1 };
     let chunks = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(1),
+        Constraint::Length(tabs_height),
         Constraint::Min(3),
         Constraint::Length(1),
     ])
@@ -86,10 +98,24 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     header(f, chunks[0], app, &theme);
     search_bar(f, chunks[1], app, &theme);
+    if tabs_height > 0 {
+        kind_tabs(f, chunks[2], app, &theme);
+    }
 
-    let body = chunks[2];
+    let body = chunks[3];
     if app.mode == Mode::Edit {
         editor_view(f, body, app, &theme);
+    } else if app.view == View::Sources {
+        if app.show_preview && body.width >= 60 {
+            let list_width = app.cfg.layout.list_width.clamp(20, 70).min(80);
+            let [list_area, preview_area] =
+                Layout::horizontal([Constraint::Percentage(list_width), Constraint::Fill(1)])
+                    .areas(body);
+            source_list(f, list_area, app, &theme);
+            source_preview(f, preview_area, app, &theme);
+        } else {
+            source_list(f, body, app, &theme);
+        }
     } else if app.show_preview && body.width >= 60 {
         let list_width = app.cfg.layout.list_width.clamp(20, 70).min(80);
         let [list_area, preview_area] =
@@ -101,12 +127,14 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         asset_list(f, body, app, &theme);
     }
 
-    status_bar(f, chunks[3], app, &theme);
+    status_bar(f, chunks[4], app, &theme);
 
     match app.mode {
         Mode::Form => form_modal(f, area, app, &theme),
         Mode::Install => install_modal(f, area, app, &theme),
+        Mode::InstallProgress => install_progress_modal(f, area, app, &theme),
         Mode::Source => source_modal(f, area, app, &theme),
+        Mode::Keymap => keymap_modal(f, area, app, &theme),
         Mode::Confirm => confirm_modal(f, area, app, &theme),
         Mode::Help => help_modal(f, area, app, &theme),
         _ => {}
@@ -126,6 +154,7 @@ fn search_bar(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
             }
         }
         Mode::Edit => "ctrl-s save · esc exit".to_string(),
+        _ if app.view == View::Sources => "A add · R rescan".to_string(),
         _ => {
             if app.content_search {
                 format!("content · sort {}", app.sort.label())
@@ -147,7 +176,11 @@ fn search_bar(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
         spans.extend(input_spans_clipped(&app.input, theme, budget));
     } else if app.query.is_empty() {
         spans.push(Span::styled(
-            "search assets  ( / to focus )",
+            if app.view == View::Sources {
+                "search sources  ( / to focus )"
+            } else {
+                "search assets  ( / to focus )"
+            },
             Style::new().fg(theme.border),
         ));
     } else {
@@ -251,15 +284,71 @@ fn discard_modal(f: &mut Frame, area: Rect, theme: &ResolvedTheme) {
     f.render_widget(Paragraph::new(Text::from(lines)), inner);
 }
 
+fn kind_tabs(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
+    let compact = area.width < 96;
+    let mut labels: Vec<Line<'static>> = Vec::new();
+    let mut add = |name: &str, count: usize| {
+        labels.push(Line::from(vec![
+            Span::raw(name.to_string()),
+            Span::styled(format!(" {count}"), Style::new().fg(theme.border)),
+        ]));
+    };
+    add("All", app.assets.len());
+    for kind in Kind::ALL {
+        let name = if compact {
+            match kind {
+                Kind::Skill => "S",
+                Kind::Agent => "A",
+                Kind::Command => "C",
+                Kind::Rule => "R",
+                Kind::Snippet => "P",
+            }
+        } else {
+            match kind {
+                Kind::Skill => "Skills",
+                Kind::Agent => "Agents",
+                Kind::Command => "Commands",
+                Kind::Rule => "Rules",
+                Kind::Snippet => "Snippets",
+            }
+        };
+        add(name, app.counts[kind.index()]);
+    }
+    add(
+        if compact { "Src" } else { "Sources" },
+        app.cfg.sources.len(),
+    );
+
+    let selected = if app.view == View::Sources {
+        6
+    } else {
+        app.kind_filter.map(|kind| kind.index() + 1).unwrap_or(0)
+    };
+    let tabs = Tabs::new(labels)
+        .select(selected)
+        .style(Style::new().fg(theme.muted))
+        .highlight_style(Style::new().fg(theme.accent).add_modifier(Modifier::BOLD))
+        .divider(Span::styled(" · ", Style::new().fg(theme.border)));
+    f.render_widget(tabs, area);
+}
+
 fn header(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
-    let right_text = format!("{}/{} assets ", app.filtered.len(), app.assets.len());
+    let right_text = if app.view == View::Sources {
+        format!("{}/{} sources ", app.source_count(), app.cfg.sources.len())
+    } else {
+        format!("{}/{} assets ", app.filtered.len(), app.assets.len())
+    };
     let right_width = right_text.width() as u16;
     let [left_area, right_area] =
         Layout::horizontal([Constraint::Min(10), Constraint::Length(right_width)]).areas(area);
 
-    let filter = match app.kind_filter {
-        Some(kind) => kind.plural(),
-        None => "all kinds",
+    let filter = if app.view == View::Sources {
+        "sources"
+    } else {
+        match app.kind_filter {
+            Some(kind) => kind.plural(),
+            None => "all kinds",
+        }
     };
     let pending = if app.pending.is_empty() {
         String::new()
@@ -294,6 +383,243 @@ fn header(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
     )))
     .alignment(Alignment::Right);
     f.render_widget(right, right_area);
+}
+
+fn source_list(f: &mut Frame, area: Rect, app: &mut App, theme: &ResolvedTheme) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(theme.border))
+        .title(Line::from(vec![
+            Span::styled(
+                " Sources ",
+                Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("{} ", app.cfg.sources.len()),
+                Style::new().fg(theme.muted),
+            ),
+        ]));
+    let inner = block.inner(area);
+    app.list_height = inner.height;
+    app.ensure_visible();
+    let rows = app.source_rows();
+
+    if rows.is_empty() {
+        let text = vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "  No sources match.",
+                Style::new().fg(theme.muted).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "  A  add a source folder",
+                Style::new().fg(theme.muted),
+            )),
+            Line::from(Span::styled(
+                "  R  rescan    g c  configuration",
+                Style::new().fg(theme.muted),
+            )),
+        ];
+        f.render_widget(Paragraph::new(text).block(block), area);
+        return;
+    }
+
+    let scrollbar = rows.len() > inner.height as usize;
+    let content_area = Rect {
+        width: inner.width.saturating_sub(u16::from(scrollbar)),
+        ..inner
+    };
+    f.render_widget(block, area);
+
+    let start = app.source_top.min(rows.len());
+    let end = (start + inner.height as usize).min(rows.len());
+    let width = content_area.width as usize;
+    let mut items = Vec::with_capacity(end - start);
+    for (position, row) in rows.iter().enumerate().skip(start).take(end - start) {
+        let selected = position == app.source_selected;
+        let badge = format!(" {} ", row.kind.badge());
+        let status = if row.exists { "ok" } else { "missing" };
+        let assets = format!(
+            "{} asset{}",
+            row.assets,
+            if row.assets == 1 { "" } else { "s" }
+        );
+        let meta = format!("{} · {} · {}", row.kind.as_str(), status, assets);
+        let path_budget = width
+            .saturating_sub(badge.width() + meta.width() + 3)
+            .max(8);
+        let path = truncate_width(&row.path, path_budget);
+        let mut spans = vec![
+            Span::styled(
+                badge,
+                Style::new()
+                    .fg(theme.kind_color(row.kind))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                path,
+                Style::new().fg(Color::Reset).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled(
+                meta,
+                Style::new().fg(if row.exists { theme.muted } else { theme.error }),
+            ),
+        ];
+        if let Some(label) = &row.label {
+            spans.push(Span::styled(
+                format!("  [{label}]"),
+                Style::new().fg(theme.accent),
+            ));
+        }
+        let mut item = ListItem::new(Line::from(spans));
+        if selected {
+            item = item.style(theme.selection);
+        }
+        items.push(item);
+    }
+    f.render_widget(List::new(items), content_area);
+
+    if scrollbar {
+        let mut state = ScrollbarState::new(rows.len())
+            .position(app.source_top)
+            .viewport_content_length(inner.height as usize);
+        let bar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .thumb_style(Style::new().fg(theme.accent))
+            .track_style(Style::new().fg(theme.border))
+            .track_symbol(Some("│"));
+        f.render_stateful_widget(bar, inner, &mut state);
+    }
+}
+
+fn source_preview(f: &mut Frame, area: Rect, app: &mut App, theme: &ResolvedTheme) {
+    let Some(row) = app.selected_source() else {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::new().fg(theme.border))
+            .title(Span::styled(" Source ", Style::new().fg(theme.muted)));
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "  Select a source with j/k",
+                Style::new().fg(theme.muted),
+            )))
+            .block(block),
+            area,
+        );
+        return;
+    };
+
+    let display = row.label.clone().unwrap_or_else(|| row.path.clone());
+    let title = truncate_width(&display, area.width.saturating_sub(18) as usize);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(theme.border))
+        .title(Line::from(vec![
+            Span::styled(
+                " Source ",
+                Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("· ", Style::new().fg(theme.border)),
+            Span::styled(title, Style::new().fg(Color::Reset)),
+        ]));
+    let inner = block.inner(area);
+
+    let mut lines: Vec<Line<'static>> = vec![
+        Line::from(Span::styled(
+            row.path.clone(),
+            Style::new().fg(Color::Reset).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(vec![
+            Span::styled(
+                format!("{} ", row.kind.badge()),
+                Style::new()
+                    .fg(theme.kind_color(row.kind))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("{} · {} asset(s)", row.kind.as_str(), row.assets),
+                Style::new().fg(theme.muted),
+            ),
+        ]),
+        Line::from(Span::styled(
+            row.resolved.display().to_string(),
+            Style::new().fg(theme.muted).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            if row.exists {
+                "exists"
+            } else {
+                "missing — check the path"
+            },
+            Style::new().fg(if row.exists {
+                theme.success
+            } else {
+                theme.error
+            }),
+        )),
+    ];
+    if let Some(label) = &row.label {
+        lines.push(Line::from(Span::styled(
+            format!("label: {label}"),
+            Style::new().fg(theme.muted),
+        )));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "assets",
+        Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+    )));
+    let mut assets: Vec<&str> = app
+        .assets
+        .iter()
+        .filter(|asset| asset.source == display)
+        .map(|asset| asset.name.as_str())
+        .collect();
+    assets.sort_unstable();
+    if assets.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  none",
+            Style::new().fg(theme.muted),
+        )));
+    } else {
+        for name in assets.iter().take(30) {
+            lines.push(Line::from(Span::styled(
+                format!("  {name}"),
+                Style::new().fg(Color::Reset),
+            )));
+        }
+        if assets.len() > 30 {
+            lines.push(Line::from(Span::styled(
+                format!("  … {} more", assets.len() - 30),
+                Style::new().fg(theme.muted),
+            )));
+        }
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "A add source · R rescan · 0-5 back to assets",
+        Style::new().fg(theme.border),
+    )));
+
+    app.preview_max_scroll = lines
+        .len()
+        .saturating_sub(inner.height as usize)
+        .min(u16::MAX as usize) as u16;
+    if app.preview_scroll > app.preview_max_scroll {
+        app.preview_scroll = app.preview_max_scroll;
+    }
+    f.render_widget(
+        Paragraph::new(Text::from(lines))
+            .block(block)
+            .wrap(Wrap { trim: false })
+            .scroll((app.preview_scroll, 0)),
+        area,
+    );
 }
 
 fn asset_list(f: &mut Frame, area: Rect, app: &mut App, theme: &ResolvedTheme) {
@@ -354,8 +680,14 @@ fn asset_list(f: &mut Frame, area: Rect, app: &mut App, theme: &ResolvedTheme) {
     let start = app.list_top.min(app.filtered.len());
     let visible = inner.height as usize;
     let end = (start + visible).min(app.filtered.len());
-    let inner_width = inner.width as usize;
+    let scrollbar = app.filtered.len() > visible;
+    let content_area = Rect {
+        width: inner.width.saturating_sub(u16::from(scrollbar)),
+        ..inner
+    };
+    let inner_width = content_area.width as usize;
     let mut items = Vec::with_capacity(end - start);
+    f.render_widget(block, area);
 
     for position in start..end {
         let asset = &app.assets[app.filtered[position]];
@@ -398,7 +730,18 @@ fn asset_list(f: &mut Frame, area: Rect, app: &mut App, theme: &ResolvedTheme) {
         items.push(item);
     }
 
-    f.render_widget(List::new(items).block(block), area);
+    f.render_widget(List::new(items), content_area);
+
+    if scrollbar {
+        let mut state = ScrollbarState::new(app.filtered.len())
+            .position(app.list_top)
+            .viewport_content_length(visible);
+        let bar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .thumb_style(Style::new().fg(theme.accent))
+            .track_style(Style::new().fg(theme.border))
+            .track_symbol(Some("│"));
+        f.render_stateful_widget(bar, inner, &mut state);
+    }
 }
 
 fn preview(f: &mut Frame, area: Rect, app: &mut App, theme: &ResolvedTheme) {
@@ -577,11 +920,27 @@ fn preview(f: &mut Frame, area: Rect, app: &mut App, theme: &ResolvedTheme) {
         app.preview_scroll = app.preview_max_scroll;
     }
 
+    let scrollbar = wrapped_rows > inner.height as usize;
+    let content_area = Rect {
+        width: inner.width.saturating_sub(u16::from(scrollbar)),
+        ..inner
+    };
+    f.render_widget(block, area);
     let paragraph = Paragraph::new(Text::from(lines))
-        .block(block)
         .wrap(Wrap { trim: false })
         .scroll((app.preview_scroll, 0));
-    f.render_widget(paragraph, area);
+    f.render_widget(paragraph, content_area);
+
+    if scrollbar {
+        let mut state = ScrollbarState::new(wrapped_rows)
+            .position(app.preview_scroll as usize)
+            .viewport_content_length(inner.height as usize);
+        let bar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .thumb_style(Style::new().fg(theme.accent))
+            .track_style(Style::new().fg(theme.border))
+            .track_symbol(Some("│"));
+        f.render_stateful_widget(bar, inner, &mut state);
+    }
 }
 
 fn body_line<'a>(line: &str, theme: &ResolvedTheme, highlight: bool) -> Line<'a> {
@@ -668,9 +1027,21 @@ fn status_bar(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
                 Style::new().fg(theme.muted),
             ));
         }
+        Mode::InstallProgress => {
+            spans.push(Span::styled(
+                " cloning in the background · please wait",
+                Style::new().fg(theme.muted),
+            ));
+        }
         Mode::Source => {
             spans.push(Span::styled(
                 " tab next · ←/→ kind · enter add · esc cancel",
+                Style::new().fg(theme.muted),
+            ));
+        }
+        Mode::Keymap => {
+            spans.push(Span::styled(
+                " enter rebind · backspace unbind · r reset · esc close",
                 Style::new().fg(theme.muted),
             ));
         }
@@ -692,6 +1063,7 @@ fn status_bar(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
                 ("a", "new"),
                 ("i", "install"),
                 ("A", "source"),
+                ("6", "sources"),
                 ("enter", "edit"),
                 ("e", "external"),
                 ("d", "delete"),
@@ -809,6 +1181,89 @@ fn form_modal(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
     )));
 
     f.render_widget(Paragraph::new(Text::from(lines)), inner);
+}
+
+fn install_progress_modal(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
+    let Some(job) = &app.install_job else {
+        return;
+    };
+    let width = (area.width.saturating_sub(4)).min(78);
+    let height = 10.min(area.height.saturating_sub(2));
+    let rect = centered(area, width, height);
+    f.render_widget(Clear, rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(theme.accent))
+        .title(Span::styled(
+            " Installing from git ",
+            Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+
+    let [target_area, gauge_area, detail_area, footer_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(3),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+
+    let target = truncate_width(&job.target, inner.width as usize);
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            target,
+            Style::new().fg(theme.muted).add_modifier(Modifier::BOLD),
+        ))),
+        target_area,
+    );
+
+    let (ratio, phase) = match job.progress.phase {
+        Phase::Clone => {
+            let ratio = job
+                .progress
+                .percent
+                .map(|percent| f64::from(percent) / 100.0 * 0.8)
+                .unwrap_or(0.0);
+            (ratio, "cloning")
+        }
+        Phase::Resolve => (0.82, "locating asset"),
+        Phase::Copy => (0.92, "copying files"),
+        Phase::Done => (1.0, "complete"),
+    };
+    let spinner = ["|", "/", "-", "\\"][job.spinner % 4];
+    let label = if let Some(percent) = job.progress.percent {
+        format!("{:>3.0}%  {phase} ({percent}% clone)", ratio * 100.0)
+    } else {
+        format!("{spinner}  {phase}")
+    };
+    let gauge = Gauge::default()
+        .gauge_style(Style::new().fg(theme.accent))
+        .style(Style::new().fg(theme.border))
+        .ratio(ratio.clamp(0.0, 1.0))
+        .label(label);
+    f.render_widget(gauge, gauge_area);
+
+    let detail = truncate_width(&job.progress.detail, inner.width as usize);
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            detail,
+            Style::new().fg(theme.muted),
+        ))),
+        detail_area,
+    );
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!(
+                "{}s elapsed · clone runs in the background; this closes when done",
+                job.elapsed().as_secs()
+            ),
+            Style::new().fg(theme.border),
+        ))),
+        footer_area,
+    );
 }
 
 fn install_modal(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
@@ -1164,6 +1619,77 @@ fn help_key_text(app: &App, action: Action) -> String {
     }
 }
 
+fn keymap_modal(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
+    let Some(editor) = &app.keymap_editor else {
+        return;
+    };
+    let width = (area.width.saturating_sub(4)).min(84);
+    let height = (area.height.saturating_sub(2)).min(24);
+    let rect = centered(area, width, height);
+    f.render_widget(Clear, rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(theme.accent))
+        .title(Line::from(vec![
+            Span::styled(
+                " Key bindings ",
+                Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(
+                    "{}/{} ",
+                    editor.selected.min(Action::ALL.len().saturating_sub(1)) + 1,
+                    Action::ALL.len()
+                ),
+                Style::new().fg(theme.muted),
+            ),
+        ]));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+
+    let visible = inner.height.saturating_sub(2).max(1) as usize;
+    let start = editor
+        .selected
+        .saturating_sub(visible / 2)
+        .min(Action::ALL.len().saturating_sub(visible));
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for (offset, action) in Action::ALL.iter().enumerate().skip(start).take(visible) {
+        let index = start + offset;
+        let keys = app.keys.display_or_dash(*action);
+        let style = if index == editor.selected {
+            theme.selection
+        } else {
+            Style::new().fg(Color::Reset)
+        };
+        lines.push(Line::from(Span::styled(
+            format!(" {:<18} {}", keys, action.label()),
+            style,
+        )));
+    }
+
+    if let Some(error) = &editor.error {
+        lines.push(Line::from(Span::styled(
+            format!(" {error}"),
+            Style::new().fg(theme.error).add_modifier(Modifier::BOLD),
+        )));
+    } else if editor.capturing {
+        let action = Action::ALL[editor.selected.min(Action::ALL.len() - 1)];
+        lines.push(Line::from(Span::styled(
+            format!(" Press a key for `{}` · esc cancels", action.label()),
+            Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+        )));
+    } else {
+        lines.push(Line::from(Span::styled(
+            " enter rebind · backspace unbind · r reset · esc close",
+            Style::new().fg(theme.muted),
+        )));
+    }
+
+    f.render_widget(Paragraph::new(Text::from(lines)), inner);
+}
+
 fn help_modal(f: &mut Frame, area: Rect, app: &mut App, theme: &ResolvedTheme) {
     let width = (area.width.saturating_sub(4)).min(78);
     let height = (area.height.saturating_sub(2)).min(30);
@@ -1207,6 +1733,8 @@ fn help_modal(f: &mut Frame, area: Rect, app: &mut App, theme: &ResolvedTheme) {
         ":new <kind>        create a skill, agent, command, rule, or snippet",
         ":install <url>     clone a skill or asset from GitHub",
         ":source <path>     add an extra source folder",
+        ":sources           show the sources tab",
+        ":keys              edit key bindings",
         ":filter <kind|all> restrict the list",
         ":sort <mode>       kind | name | modified | path",
         ":theme <preset>    dark | light | mono",

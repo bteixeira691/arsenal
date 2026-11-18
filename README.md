@@ -139,6 +139,15 @@ The folder follows the normal layout: for skills it must contain
 comments — is never rewritten. Relative paths resolve against the directory
 Arsenal runs in.
 
+### Sources tab
+
+Press `6` (or `:sources`) to switch from the asset list to the source list. It
+shows every configured source with its kind, path, whether the directory exists,
+and how many assets it contributes. The preview resolves the absolute path and
+lists its assets; `/` filters sources by path, kind, or label. `y` copies the
+source path and `o` opens it in the file manager. The tab bar at the top always
+shows counts for every kind plus the number of sources.
+
 ## Keymaps
 
 Vim-style sequences are supported (`g g`, not just single keys). Every default
@@ -154,6 +163,8 @@ below is remappable; see [Configuration](#configuration).
 | `/`         | Focus the always-visible search bar; `enter` keeps, `esc` reverts |
 | `n` / `N`   | Next / previous result (wraps)            |
 | `0`–`5`     | All kinds, skills, agents, commands, rules, snippets |
+| `6`         | Sources tab                               |
+| `g k`       | Edit key bindings                         |
 | `s`         | Cycle sort: kind, name, modified, path    |
 | `F`         | Toggle content search (document bodies)   |
 | `t`         | Toggle the preview pane                   |
@@ -213,8 +224,9 @@ merges or deletes anything.
 
 `i` (or `:install <url>`) opens the install form. Paste a GitHub repository or
 tree URL, choose the kind and destination source, and press `enter`. The clone
-runs in the foreground with git's progress visible; when it finishes the TUI
-reloads, selects the new asset, and reports where it landed.
+runs in a background thread while a progress modal shows git's receiving-objects
+percentage, then the resolve and copy phases. The terminal stays usable; when it
+finishes the modal closes, the list refreshes, and the new asset is selected.
 
 ```sh
 # a skill inside a monorepo (tree URL)
@@ -306,6 +318,8 @@ editor.
 | `:new <kind>`         | Open the create form (`skill` is the default)|
 | `:install <url>`      | Clone a skill/asset from GitHub              |
 | `:source <path>`      | Add an extra source folder                   |
+| `:sources`            | Show the sources tab                         |
+| `:keys`               | Edit key bindings                            |
 | `:inline`             | Edit the selected document in-app            |
 | `:filter <kind\|all>` | Restrict the list                            |
 | `:sort <mode>`        | `kind`, `name`, `modified`, `path`           |
@@ -351,6 +365,8 @@ Resolution order:
 The file is created on first use. `arsenal config init --force` rewrites it.
 Folders added with `arsenal sources add` or `A` are kept separately in
 `config.sources.toml` in the same directory; the main file is never rewritten.
+Bindings changed with `g k` (or `:keys`) are stored in `config.keys.toml` the
+same way.
 
 ```toml
 [editor]
@@ -439,6 +455,11 @@ Bindings are sequences of chords. Modifiers use `ctrl-`, `alt-`, `shift-`
 `backtab`, `space`, `backspace`, `delete`, `insert`, `home`, `end`, `pageup`,
 `pagedown`, `left`, `right`, `up`, `down`, `f1`…`f24`.
 
+Change bindings without editing TOML: press `g k` (or `:keys`). Navigate with
+`j`/`k`, press `enter` and then the key to bind, `backspace` to unbind, `r` to
+reset an action to its configured/default binding, and `esc` to close. Changes
+are saved to `config.keys.toml` and applied immediately.
+
 Unknown actions, unparsable sequences, and duplicate chords are reported as
 warnings on startup (press `?`), and the built-in binding is kept.
 
@@ -502,7 +523,8 @@ packaging/     npm launcher, winget manifests, release notes
 Unit tests cover frontmatter fallbacks, scanning, scaffolding, trash, fuzzy
 filtering, sorting, key sequences, UTF-8 text editing, form validation, delete
 confirmation, inline editing/save/undo, content search, duplicate detection,
-source overlays, GitHub URL parsing, and install/force/ambiguity cases.
+source overlays, key overlays, keymap capture, GitHub URL parsing, and
+install/force/ambiguity cases.
 
 ## License
 

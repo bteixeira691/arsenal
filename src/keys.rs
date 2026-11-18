@@ -302,6 +302,8 @@ pub enum Action {
     CycleTheme,
     CycleSort,
     ToggleContentSearch,
+    ShowSources,
+    EditKeymap,
     FilterAll,
     FilterSkill,
     FilterAgent,
@@ -311,7 +313,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 36] = [
+    pub const ALL: [Action; 38] = [
         Action::Quit,
         Action::Help,
         Action::Command,
@@ -342,6 +344,8 @@ impl Action {
         Action::CycleTheme,
         Action::CycleSort,
         Action::ToggleContentSearch,
+        Action::ShowSources,
+        Action::EditKeymap,
         Action::FilterAll,
         Action::FilterSkill,
         Action::FilterAgent,
@@ -382,6 +386,8 @@ impl Action {
             Action::CycleTheme => "cycle_theme",
             Action::CycleSort => "cycle_sort",
             Action::ToggleContentSearch => "toggle_content_search",
+            Action::ShowSources => "show_sources",
+            Action::EditKeymap => "edit_keymap",
             Action::FilterAll => "filter_all",
             Action::FilterSkill => "filter_skill",
             Action::FilterAgent => "filter_agent",
@@ -423,6 +429,8 @@ impl Action {
             Action::CycleTheme => "Cycle theme preset",
             Action::CycleSort => "Cycle sort order",
             Action::ToggleContentSearch => "Search document contents",
+            Action::ShowSources => "Show sources tab",
+            Action::EditKeymap => "Edit key bindings",
             Action::FilterAll => "Show all kinds",
             Action::FilterSkill => "Show skills",
             Action::FilterAgent => "Show agents",
@@ -471,6 +479,8 @@ pub const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     (Action::CycleTheme, "T"),
     (Action::CycleSort, "s"),
     (Action::ToggleContentSearch, "F"),
+    (Action::ShowSources, "6"),
+    (Action::EditKeymap, "g k"),
     (Action::FilterAll, "0"),
     (Action::FilterSkill, "1"),
     (Action::FilterAgent, "2"),

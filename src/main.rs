@@ -539,12 +539,7 @@ fn handle_effects(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
                     app.set_status(format!("Reveal failed: {error:#}"), Level::Error);
                 }
             }
-            Effect::Install(request) => {
-                let _ = ratatui::try_restore();
-                let outcome = install::install(&request).map_err(|error| format!("{error:#}"));
-                *terminal = ratatui::try_init().context("re-initializing terminal")?;
-                app.after_install(outcome);
-            }
+            Effect::Install(request) => app.start_install(request),
         }
     }
     Ok(())

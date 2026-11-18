@@ -515,6 +515,10 @@ pub fn load(path: &Path) -> Result<(Config, Vec<String>)> {
         Ok(sources) => config.sources.extend(sources),
         Err(error) => warnings.push(format!("extra sources: {error}")),
     }
+    match load_key_overlay(path) {
+        Ok(keys) => config.keys.extend(keys),
+        Err(error) => warnings.push(format!("extra key bindings: {error}")),
+    }
     warnings.extend(config.normalize());
     Ok((config, warnings))
 }
@@ -522,12 +526,73 @@ pub fn load(path: &Path) -> Result<(Config, Vec<String>)> {
 /// Additional sources managed by `arsenal sources` and the TUI live next to the
 /// main configuration so user comments in `config.toml` are never rewritten.
 pub fn sources_path(config_path: &Path) -> PathBuf {
+    overlay_path(config_path, "sources")
+}
+
+pub fn keys_path(config_path: &Path) -> PathBuf {
+    overlay_path(config_path, "keys")
+}
+
+fn overlay_path(config_path: &Path, suffix: &str) -> PathBuf {
     let stem = config_path
         .file_stem()
         .map(|stem| stem.to_string_lossy().into_owned())
         .filter(|stem| !stem.is_empty())
         .unwrap_or_else(|| "config".into());
-    config_path.with_file_name(format!("{stem}.sources.toml"))
+    config_path.with_file_name(format!("{stem}.{suffix}.toml"))
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+struct KeyOverlay {
+    keys: BTreeMap<String, String>,
+}
+
+fn load_key_overlay(config_path: &Path) -> Result<BTreeMap<String, String>, String> {
+    let path = keys_path(config_path);
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(BTreeMap::new()),
+        Err(error) => return Err(format!("{}: {error}", path.display())),
+    };
+    let overlay: KeyOverlay =
+        toml::from_str(&text).map_err(|error| format!("{}: {error}", path.display()))?;
+    Ok(overlay.keys)
+}
+
+/// Persist one binding in the managed key overlay. `None` removes the override
+/// so the built-in or main-config binding applies again; `Some("")` unbinds.
+pub fn set_key(config_path: &Path, action: &str, sequence: Option<&str>) -> Result<(), String> {
+    let mut keys = load_key_overlay(config_path)?;
+    match sequence {
+        Some(sequence) => {
+            keys.insert(action.to_string(), sequence.to_string());
+        }
+        None => {
+            keys.remove(action);
+        }
+    }
+    write_key_overlay(config_path, &keys)
+}
+
+fn write_key_overlay(config_path: &Path, keys: &BTreeMap<String, String>) -> Result<(), String> {
+    let path = keys_path(config_path);
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
+    }
+    let body = toml::to_string_pretty(&KeyOverlay { keys: keys.clone() })
+        .map_err(|error| error.to_string())?;
+    fs::write(
+        &path,
+        format!(
+            "# Key bindings managed by `arsenal` (the g k editor).\n\
+             # Values replace built-in bindings; an empty string disables an action.\n\
+             # Delete an entry to fall back to the built-in binding.\n\n{body}"
+        ),
+    )
+    .map_err(|error| format!("{}: {error}", path.display()))
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -868,6 +933,46 @@ mod tests {
             warnings
                 .iter()
                 .any(|warning| warning.contains("extra sources")),
+            "{warnings:?}"
+        );
+    }
+
+    #[test]
+    fn key_bindings_are_managed_separately() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+        let main = "[behavior]\nscan_depth = 2\n";
+        fs::write(&config_path, main).unwrap();
+
+        set_key(&config_path, "quit", Some("ctrl-q")).unwrap();
+        assert_eq!(fs::read_to_string(&config_path).unwrap(), main);
+        assert!(keys_path(&config_path).exists());
+        let (config, warnings) = load(&config_path).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(config.keys.get("quit").map(String::as_str), Some("ctrl-q"));
+
+        set_key(&config_path, "quit", None).unwrap();
+        let (config, _) = load(&config_path).unwrap();
+        assert_eq!(config.keys.get("quit").map(String::as_str), Some("q"));
+
+        set_key(&config_path, "quit", Some("")).unwrap();
+        let (config, _) = load(&config_path).unwrap();
+        assert_eq!(config.keys.get("quit").map(String::as_str), Some(""));
+    }
+
+    #[test]
+    fn malformed_key_overlay_warns_without_failing() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+        fs::write(&config_path, "[behavior]\nscan_depth = 2\n").unwrap();
+        fs::write(keys_path(&config_path), "[keys\n").unwrap();
+
+        let (config, warnings) = load(&config_path).unwrap();
+        assert_eq!(config.behavior.scan_depth, 2);
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("extra key bindings")),
             "{warnings:?}"
         );
     }

@@ -1,6 +1,6 @@
 {
   "name": "arsenal-tui",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Terminal UI for cataloging, searching, and editing agent skills, agents, commands, and rules",
   "license": "MIT",
   "type": "commonjs",
@@ -16,7 +16,8 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/bteixeira691/arsenal.git"
+    "url": "git+https://github.com/bteixeira691/arsenal.git",
+    "directory": "packaging/npm"
   },
   "homepage": "https://github.com/bteixeira691/arsenal",
   "bugs": {

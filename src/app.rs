@@ -4,6 +4,8 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -19,14 +21,22 @@ use crate::search::{self, SortMode};
 const STATUS_TTL: Duration = Duration::from_secs(8);
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum View {
+    Assets,
+    Sources,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mode {
     Normal,
     Search,
     Command,
     Form,
     Install,
+    InstallProgress,
     Edit,
     Source,
+    Keymap,
     Confirm,
     Help,
 }
@@ -39,8 +49,10 @@ impl Mode {
             Mode::Command => "COMMAND",
             Mode::Form => "FORM",
             Mode::Install => "INSTALL",
+            Mode::InstallProgress => "CLONE",
             Mode::Edit => "EDIT",
             Mode::Source => "SOURCE",
+            Mode::Keymap => "KEYS",
             Mode::Confirm => "CONFIRM",
             Mode::Help => "HELP",
         }
@@ -432,12 +444,49 @@ impl SourceForm {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct KeymapEditor {
+    pub selected: usize,
+    pub capturing: bool,
+    pub error: Option<String>,
+}
+
+enum InstallMessage {
+    Progress(install::Progress),
+    Done(Result<install::Installed, String>),
+}
+
+pub struct InstallJob {
+    receiver: Receiver<InstallMessage>,
+    pub progress: install::Progress,
+    pub started: Instant,
+    pub spinner: usize,
+    pub target: String,
+}
+
+impl InstallJob {
+    pub fn elapsed(&self) -> Duration {
+        self.started.elapsed()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct DocumentEditor {
     pub path: PathBuf,
     pub label: String,
     pub textarea: TextArea<'static>,
     pub dirty: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct SourceRow {
+    pub index: usize,
+    pub kind: Kind,
+    pub path: String,
+    pub resolved: PathBuf,
+    pub exists: bool,
+    pub assets: usize,
+    pub label: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -467,6 +516,8 @@ pub struct App {
     pub assets: Vec<Asset>,
     pub filtered: Vec<usize>,
     pub selected: usize,
+    pub view: View,
+    pub source_selected: usize,
     pub query: String,
     pub kind_filter: Option<Kind>,
     pub content_search: bool,
@@ -476,7 +527,9 @@ pub struct App {
     pub form: Option<Form>,
     pub install: Option<InstallForm>,
     last_install: Option<InstallForm>,
+    pub install_job: Option<InstallJob>,
     pub source_form: Option<SourceForm>,
+    pub keymap_editor: Option<KeymapEditor>,
     pub editor: Option<DocumentEditor>,
     pub discard_prompt: bool,
     pub confirm: Option<Confirm>,
@@ -496,7 +549,9 @@ pub struct App {
     pub quit: bool,
     pub list_height: u16,
     pub list_top: usize,
+    pub source_top: usize,
     pub active_sources: usize,
+    pub counts: [usize; 5],
     fingerprints: BTreeMap<u64, usize>,
     pub data_dir: PathBuf,
     search_backup: String,
@@ -522,6 +577,8 @@ impl App {
             assets: Vec::new(),
             filtered: Vec::new(),
             selected: 0,
+            view: View::Assets,
+            source_selected: 0,
             query: String::new(),
             kind_filter: None,
             content_search,
@@ -531,7 +588,9 @@ impl App {
             form: None,
             install: None,
             last_install: None,
+            install_job: None,
             source_form: None,
+            keymap_editor: None,
             editor: None,
             discard_prompt: false,
             confirm: None,
@@ -551,7 +610,9 @@ impl App {
             quit: false,
             list_height: 10,
             list_top: 0,
+            source_top: 0,
             active_sources: 0,
+            counts: [0; 5],
             fingerprints: BTreeMap::new(),
             data_dir,
             search_backup: String::new(),
@@ -620,6 +681,7 @@ impl App {
     }
 
     pub fn tick(&mut self) {
+        self.poll_install();
         if let Some(status) = &self.status
             && status.at.elapsed() > STATUS_TTL
         {
@@ -636,8 +698,10 @@ impl App {
         let report = asset::scan(&self.cfg.sources, &self.cfg.behavior);
         self.assets = report.assets;
         self.fingerprints.clear();
+        self.counts = [0; 5];
         for asset in &self.assets {
             *self.fingerprints.entry(asset.fingerprint).or_default() += 1;
+            self.counts[asset.kind.index()] += 1;
         }
         self.active_sources = report.active_sources;
         self.warnings = self.static_warnings.clone();
@@ -664,11 +728,85 @@ impl App {
         if self.current_path() != previous {
             self.preview_scroll = 0;
         }
+        self.clamp_source_selection();
         self.ensure_visible();
+    }
+
+    pub fn source_rows(&self) -> Vec<SourceRow> {
+        let terms: Vec<String> = self
+            .query
+            .split_whitespace()
+            .map(|term| term.to_lowercase())
+            .collect();
+        let mut rows = Vec::new();
+        for (index, source) in self.cfg.sources.iter().enumerate() {
+            let display = source.display();
+            let resolved = source.resolved();
+            let haystack = format!(
+                "{} {} {} {}",
+                display,
+                source.kind.as_str(),
+                source.path,
+                resolved.display()
+            )
+            .to_lowercase();
+            if !terms.iter().all(|term| haystack.contains(term)) {
+                continue;
+            }
+            rows.push(SourceRow {
+                index,
+                kind: source.kind,
+                path: source.path.clone(),
+                resolved,
+                exists: source.resolved().is_dir(),
+                assets: self
+                    .assets
+                    .iter()
+                    .filter(|asset| asset.source == display)
+                    .count(),
+                label: source.label.clone(),
+            });
+        }
+        rows
+    }
+
+    fn clamp_source_selection(&mut self) {
+        let len = self.source_rows().len();
+        if len == 0 {
+            self.source_selected = 0;
+            self.source_top = 0;
+        } else if self.source_selected >= len {
+            self.source_selected = len - 1;
+        }
+    }
+
+    pub fn source_count(&self) -> usize {
+        self.source_rows().len()
+    }
+
+    pub fn selected_source(&self) -> Option<SourceRow> {
+        self.source_rows().get(self.source_selected).cloned()
     }
 
     /// Keep the selected row inside the visible viewport.
     pub fn ensure_visible(&mut self) {
+        if self.view == View::Sources {
+            let len = self.source_rows().len();
+            if len == 0 {
+                self.source_top = 0;
+                return;
+            }
+            let height = self.list_height.max(1) as usize;
+            if self.source_selected < self.source_top {
+                self.source_top = self.source_selected;
+            }
+            if self.source_selected >= self.source_top + height {
+                self.source_top = self.source_selected + 1 - height;
+            }
+            let max_top = len.saturating_sub(height);
+            self.source_top = self.source_top.min(max_top).min(self.source_selected);
+            return;
+        }
         if self.filtered.is_empty() {
             self.list_top = 0;
             return;
@@ -697,6 +835,26 @@ impl App {
     }
 
     fn move_selection(&mut self, delta: i32, wrap: bool) {
+        if self.view == View::Sources {
+            let len = self.source_rows().len();
+            if len == 0 {
+                self.source_selected = 0;
+                return;
+            }
+            let current = self.source_selected.min(len - 1) as i32;
+            let mut next = current + delta;
+            next = if wrap {
+                next.rem_euclid(len as i32)
+            } else {
+                next.clamp(0, len as i32 - 1)
+            };
+            if next as usize != self.source_selected {
+                self.source_selected = next as usize;
+                self.preview_scroll = 0;
+                self.ensure_visible();
+            }
+            return;
+        }
         let len = self.filtered.len();
         if len == 0 {
             self.selected = 0;
@@ -736,6 +894,7 @@ impl App {
     }
 
     fn set_kind_filter(&mut self, kind: Option<Kind>) {
+        self.view = View::Assets;
         self.kind_filter = kind;
         self.selected = 0;
         self.list_top = 0;
@@ -789,8 +948,10 @@ impl App {
             Mode::Command => self.on_command(key),
             Mode::Form => self.on_form(key),
             Mode::Install => self.on_install(key),
+            Mode::InstallProgress => {}
             Mode::Edit => self.on_edit(key),
             Mode::Source => self.on_source(key),
+            Mode::Keymap => self.on_keymap(key),
             Mode::Confirm => self.on_confirm(key),
             Mode::Help => self.on_help(key),
         }
@@ -1041,6 +1202,45 @@ impl App {
         self.effects.push(Effect::Install(request));
     }
 
+    pub fn start_install(&mut self, request: install::Request) {
+        let target = request.url.clone();
+        let (sender, receiver) = mpsc::channel();
+        let progress_sender = sender.clone();
+        thread::spawn(move || {
+            let mut report = move |progress| {
+                let _ = progress_sender.send(InstallMessage::Progress(progress));
+            };
+            let result = install::install_with_progress(&request, &mut report)
+                .map_err(|error| format!("{error:#}"));
+            let _ = sender.send(InstallMessage::Done(result));
+        });
+        self.install_job = Some(InstallJob {
+            receiver,
+            progress: install::Progress::start(format!("cloning {target}")),
+            started: Instant::now(),
+            spinner: 0,
+            target,
+        });
+        self.mode = Mode::InstallProgress;
+    }
+
+    fn poll_install(&mut self) {
+        let mut finished = None;
+        if let Some(job) = self.install_job.as_mut() {
+            while let Ok(message) = job.receiver.try_recv() {
+                match message {
+                    InstallMessage::Progress(progress) => job.progress = progress,
+                    InstallMessage::Done(result) => finished = Some(result),
+                }
+            }
+            job.spinner = job.spinner.wrapping_add(1);
+        }
+        if let Some(result) = finished {
+            self.install_job = None;
+            self.after_install(result);
+        }
+    }
+
     pub fn after_install(&mut self, outcome: Result<install::Installed, String>) {
         match outcome {
             Ok(done) => {
@@ -1215,8 +1415,16 @@ impl App {
         }
         match config::add_source(&self.config_path, &source) {
             Ok(true) => {
+                let new_index = self.cfg.sources.len();
                 self.cfg.sources.push(source);
                 self.reload(false);
+                self.view = View::Sources;
+                self.source_selected = self
+                    .source_rows()
+                    .iter()
+                    .position(|row| row.index == new_index)
+                    .unwrap_or(0);
+                self.ensure_visible();
                 self.mode = Mode::Normal;
                 self.set_status(
                     format!(
@@ -1238,6 +1446,104 @@ impl App {
                 self.source_form = Some(form);
             }
         }
+    }
+
+    fn on_keymap(&mut self, key: KeyEvent) {
+        let Some(mut editor) = self.keymap_editor.take() else {
+            self.mode = Mode::Normal;
+            return;
+        };
+
+        if editor.capturing {
+            if key.code == KeyCode::Esc {
+                editor.capturing = false;
+                editor.error = None;
+                self.keymap_editor = Some(editor);
+                return;
+            }
+            let Some(chord) = Chord::from_event(key) else {
+                self.keymap_editor = Some(editor);
+                return;
+            };
+            let action = Action::ALL[editor.selected.min(Action::ALL.len() - 1)];
+            match self.apply_key_change(action, Some(&chord.to_string())) {
+                Ok(()) => {
+                    editor.capturing = false;
+                    editor.error = None;
+                    self.set_status(
+                        format!("Bound {} to {}", action.as_str(), chord),
+                        Level::Success,
+                    );
+                }
+                Err(error) => {
+                    editor.capturing = false;
+                    editor.error = Some(error);
+                }
+            }
+            self.keymap_editor = Some(editor);
+            return;
+        }
+
+        match key.code {
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+                return;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                editor.selected = editor.selected.saturating_sub(1);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                editor.selected = (editor.selected + 1).min(Action::ALL.len() - 1);
+            }
+            KeyCode::Home | KeyCode::Char('g') => editor.selected = 0,
+            KeyCode::End | KeyCode::Char('G') => editor.selected = Action::ALL.len() - 1,
+            KeyCode::Enter => {
+                editor.capturing = true;
+                editor.error = None;
+            }
+            KeyCode::Backspace | KeyCode::Delete => {
+                let action = Action::ALL[editor.selected.min(Action::ALL.len() - 1)];
+                match self.apply_key_change(action, Some("")) {
+                    Ok(()) => {
+                        editor.error = None;
+                        self.set_status(format!("Unbound {}", action.as_str()), Level::Warning);
+                    }
+                    Err(error) => editor.error = Some(error),
+                }
+            }
+            KeyCode::Char('r') => {
+                let action = Action::ALL[editor.selected.min(Action::ALL.len() - 1)];
+                match self.apply_key_change(action, None) {
+                    Ok(()) => {
+                        editor.error = None;
+                        self.set_status(
+                            format!("Reset {} to its default/config binding", action.as_str()),
+                            Level::Info,
+                        );
+                    }
+                    Err(error) => editor.error = Some(error),
+                }
+            }
+            _ => {}
+        }
+        self.keymap_editor = Some(editor);
+    }
+
+    fn apply_key_change(&mut self, action: Action, sequence: Option<&str>) -> Result<(), String> {
+        config::set_key(&self.config_path, action.as_str(), sequence)?;
+        let (cfg, warnings) =
+            config::load(&self.config_path).map_err(|error| format!("{error:#}"))?;
+        let (keys, key_warnings) = Keymap::from_map(&cfg.keys);
+        self.cfg.keys = cfg.keys;
+        self.keys = keys;
+        self.pending.clear();
+        for warning in warnings.into_iter().chain(key_warnings) {
+            if !self.warnings.contains(&warning) {
+                self.warnings.push(warning.clone());
+                self.static_warnings.push(warning);
+            }
+        }
+        Ok(())
     }
 
     fn on_confirm(&mut self, key: KeyEvent) {
@@ -1312,13 +1618,29 @@ impl App {
                 let kind = self.kind_filter.unwrap_or(Kind::Skill);
                 self.open_install_form(kind);
             }
-            Action::EditInline => self.open_editor(),
+            Action::EditInline => {
+                if self.view == View::Assets {
+                    self.open_editor();
+                }
+            }
+            Action::ShowSources => {
+                self.view = View::Sources;
+                self.mode = Mode::Normal;
+                self.clamp_source_selection();
+                self.ensure_visible();
+            }
+            Action::EditKeymap => {
+                self.keymap_editor = Some(KeymapEditor::default());
+                self.mode = Mode::Keymap;
+            }
             Action::AddSource => {
                 let kind = self.kind_filter.unwrap_or(Kind::Skill);
                 self.open_source_form(kind);
             }
             Action::Edit => {
-                if let Some(asset) = self.current() {
+                if self.view == View::Assets
+                    && let Some(asset) = self.current()
+                {
                     self.effects.push(Effect::EditAsset {
                         path: asset.path.clone(),
                         line: 1,
@@ -1326,7 +1648,9 @@ impl App {
                 }
             }
             Action::Delete => {
-                if let Some(asset) = self.current() {
+                if self.view == View::Assets
+                    && let Some(asset) = self.current()
+                {
                     let path = asset.path.clone();
                     let label = asset.name.clone();
                     if self.cfg.behavior.confirm_delete {
@@ -1338,12 +1662,22 @@ impl App {
                 }
             }
             Action::YankPath => {
-                if let Some(path) = self.current_path() {
-                    self.copy = Some(path.display().to_string());
+                let path = if self.view == View::Sources {
+                    self.selected_source().map(|source| source.path)
+                } else {
+                    self.current_path().map(|path| path.display().to_string())
+                };
+                if let Some(path) = path {
+                    self.copy = Some(path);
                 }
             }
             Action::Reveal => {
-                if let Some(path) = self.current_path() {
+                let path = if self.view == View::Sources {
+                    self.selected_source().map(|source| source.resolved)
+                } else {
+                    self.current_path()
+                };
+                if let Some(path) = path {
                     self.effects.push(Effect::Reveal(path));
                 }
             }
@@ -1372,12 +1706,20 @@ impl App {
             Action::Down => self.move_selection(1, false),
             Action::Up => self.move_selection(-1, false),
             Action::Top => {
-                self.selected = 0;
+                if self.view == View::Sources {
+                    self.source_selected = 0;
+                } else {
+                    self.selected = 0;
+                }
                 self.preview_scroll = 0;
                 self.ensure_visible();
             }
             Action::Bottom => {
-                self.selected = self.filtered.len().saturating_sub(1);
+                if self.view == View::Sources {
+                    self.source_selected = self.source_rows().len().saturating_sub(1);
+                } else {
+                    self.selected = self.filtered.len().saturating_sub(1);
+                }
                 self.preview_scroll = 0;
                 self.ensure_visible();
             }
@@ -1567,7 +1909,12 @@ impl App {
             }
             "edit" | "e" => self.run_action(Action::Edit),
             "inline" | "edit-inline" => self.open_editor(),
-            "source" | "sources" => {
+            "sources" => self.run_action(Action::ShowSources),
+            "keys" | "keymap" | "bindings" => {
+                self.keymap_editor = Some(KeymapEditor::default());
+                self.mode = Mode::Keymap;
+            }
+            "source" => {
                 let mut tokens = line.split_whitespace();
                 tokens.next();
                 let path = tokens.next();
@@ -2132,6 +2479,55 @@ mod tests {
                 .unwrap()
                 .contains("not a directory")
         );
+    }
+
+    #[test]
+    fn sources_tab_lists_configured_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_sources(dir.path());
+        app.on_key(key(KeyCode::Char('6')));
+        assert_eq!(app.view, View::Sources);
+        assert_eq!(app.mode, Mode::Normal);
+        let rows = app.source_rows();
+        assert!(
+            rows.iter()
+                .any(|row| row.kind == Kind::Skill && row.path.ends_with("skills"))
+        );
+        assert_eq!(app.source_count(), rows.len());
+
+        app.query = "agent".into();
+        app.recompute();
+        assert!(app.source_rows().iter().all(|row| row.kind == Kind::Agent));
+
+        app.on_key(key(KeyCode::Char('0')));
+        assert_eq!(app.view, View::Assets);
+    }
+
+    #[test]
+    fn keymap_editor_rebinds_and_persists() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("config.toml"),
+            "[behavior]\nscan_depth = 2\n",
+        )
+        .unwrap();
+        let mut app = app_with_sources(dir.path());
+
+        app.on_key(key(KeyCode::Char('g')));
+        app.on_key(key(KeyCode::Char('k')));
+        assert_eq!(app.mode, Mode::Keymap);
+        assert!(app.keymap_editor.is_some());
+
+        app.on_key(key(KeyCode::Enter));
+        assert!(app.keymap_editor.as_ref().unwrap().capturing);
+        app.on_key(key(KeyCode::Char('X')));
+        assert_eq!(app.keys.keys_for(Action::Quit).as_deref(), Some("X"));
+        assert!(config::keys_path(&app.config_path).exists());
+
+        app.on_key(key(KeyCode::Esc));
+        assert_eq!(app.mode, Mode::Normal);
+        let (cfg, _) = config::load(&app.config_path).unwrap();
+        assert_eq!(cfg.keys.get("quit").map(String::as_str), Some("X"));
     }
 
     #[test]
