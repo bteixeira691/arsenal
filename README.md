@@ -278,12 +278,21 @@ Behavior:
   Markdown file in the selected directory.
 - The destination defaults to the first configured source for the kind. With the
   stock configuration that is `~/.claude/skills` for skills and
-  `~/.claude/agents` for agents, which Claude Code discovers immediately; omp's
-  Claude skill provider also reads `~/.claude/skills`. For omp-native agents,
-  commands, rules, or skills, install into `~/.omp/agent/skills`,
-  `~/.omp/agent/agents`, `~/.omp/agent/commands`, or `~/.omp/agent/rules` with
-  `--dest` (or the TUI source field). Add any other root as a `[[sources]]`
-  entry to make it selectable.
+  `~/.claude/agents` for agents, which Claude Code discovers immediately.
+- omp's native roots are `~/.omp/agent/skills`, `~/.omp/agent/agents`,
+  `~/.omp/agent/commands`, and `~/.omp/agent/rules`. Choose that source in the
+  install form (or pass `--dest`) when the asset is for omp.
+- omp only reads foreign `~/.claude` user skills when `~/.omp/agent/config.yml`
+  opts in:
+
+  ```yaml
+  enabledProviders:
+    - claude
+  ```
+
+  Without that, install into `~/.omp/agent/<kind>s` or the skill will not appear
+  in `omp skill list`. Project-local `.claude` sources do not need this opt-in.
+- Add any other root as a `[[sources]]` entry to make it selectable.
 - Nothing is executed during install: it is a clone plus a file copy.
 
 ## Creating assets
