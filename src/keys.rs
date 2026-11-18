@@ -154,6 +154,9 @@ impl Chord {
     /// `?`, `:`, and `G` bindable regardless of the reported modifier bits.
     fn normalize(&mut self) {
         match self.key {
+            Key::Char(c) if (self.mods.ctrl || self.mods.alt) && c.is_ascii_alphabetic() => {
+                self.key = Key::Char(c.to_ascii_lowercase());
+            }
             Key::Char(c) if c.is_ascii_uppercase() => self.mods.shift = true,
             Key::Char(c) if !c.is_ascii_alphabetic() => self.mods.shift = false,
             Key::BackTab => {
@@ -642,6 +645,10 @@ mod tests {
         assert_eq!(chord, Chord::parse("G").unwrap());
         let chord = Chord::from_event(ev(KeyCode::Char('d'), KeyModifiers::CONTROL)).unwrap();
         assert_eq!(chord, Chord::parse("ctrl-d").unwrap());
+        let chord = Chord::from_event(ev(KeyCode::Char('H'), KeyModifiers::CONTROL)).unwrap();
+        assert_eq!(chord, Chord::parse("ctrl-h").unwrap());
+        let chord = Chord::from_event(ev(KeyCode::Char('L'), KeyModifiers::CONTROL)).unwrap();
+        assert_eq!(chord, Chord::parse("ctrl-l").unwrap());
     }
 
     #[test]

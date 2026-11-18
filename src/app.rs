@@ -1016,6 +1016,29 @@ impl App {
     }
 
     fn on_normal(&mut self, key: KeyEvent) {
+        // Terminal.app sends Ctrl-H as Backspace (0x08), so treat Backspace
+        // like "focus search" while the list/preview has focus. Ctrl-Left and
+        // Ctrl-Right are reliable fallbacks in terminals that reserve Ctrl-H/L.
+        if key.code == KeyCode::Backspace {
+            self.pending.clear();
+            self.open_search();
+            return;
+        }
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
+            match key.code {
+                KeyCode::Left => {
+                    self.pending.clear();
+                    self.open_search();
+                    return;
+                }
+                KeyCode::Right => {
+                    self.pending.clear();
+                    self.focus_preview();
+                    return;
+                }
+                _ => {}
+            }
+        }
         if key.code == KeyCode::Esc {
             self.pending.clear();
             if !self.query.is_empty() {
@@ -1065,11 +1088,11 @@ impl App {
     fn on_search(&mut self, key: KeyEvent) {
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
-                KeyCode::Char('l') => {
+                KeyCode::Char('l') | KeyCode::Char('L') | KeyCode::Right => {
                     self.focus_preview();
                     return;
                 }
-                KeyCode::Char('h') => {
+                KeyCode::Char('h') | KeyCode::Char('H') | KeyCode::Left => {
                     self.focus = Focus::Search;
                     return;
                 }
@@ -2227,7 +2250,7 @@ mod tests {
         assert_eq!(app.focus, Focus::Search);
 
         let selected = app.selected;
-        app.on_key(ctrl(KeyCode::Char('l')));
+        app.on_key(ctrl(KeyCode::Char('L')));
         assert_eq!(app.mode, Mode::Normal);
         assert_eq!(app.focus, Focus::Preview);
         assert_eq!(app.selected, selected);
@@ -2235,18 +2258,22 @@ mod tests {
         assert_eq!(app.preview_scroll, 1);
         assert_eq!(app.selected, selected);
 
-        app.on_key(ctrl(KeyCode::Char('h')));
+        // Terminal.app reports Ctrl-H as Backspace.
+        app.on_key(key(KeyCode::Backspace));
         assert_eq!(app.mode, Mode::Search);
         assert_eq!(app.focus, Focus::Search);
         assert_eq!(app.input.value, "deploy");
         app.on_key(key(KeyCode::Esc));
         assert_eq!(app.focus, Focus::List);
 
-        app.on_key(ctrl(KeyCode::Char('l')));
+        app.on_key(ctrl(KeyCode::Right));
         assert_eq!(app.focus, Focus::Preview);
         app.on_key(key(KeyCode::Char('t')));
         assert!(!app.show_preview);
         assert_eq!(app.focus, Focus::List);
+
+        app.on_key(key(KeyCode::Backspace));
+        assert_eq!(app.mode, Mode::Search);
     }
 
     #[test]

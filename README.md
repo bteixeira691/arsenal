@@ -196,6 +196,11 @@ accent-colored, `j`/`k` and the navigation keys scroll the preview instead of
 moving the asset selection, and `ctrl-h` returns to the search bar. `ctrl-h`
 from the asset list also opens the search bar.
 
+macOS Terminal sends `ctrl-h` as Backspace. In Normal mode Arsenal treats
+Backspace as “focus search”, so it still works there. `ctrl-left` and
+`ctrl-right` are reliable alternatives for search and preview focus in terminals
+that reserve `ctrl-h`/`ctrl-l`.
+
 Arrow keys, `home`/`end`, and `pageup`/`pagedown` always navigate the list, or
 scroll the preview while it is focused, even if you remap the vim-style
 bindings. In dialogs they cycle choices and fields; in the editor they move the
