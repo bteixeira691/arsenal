@@ -94,10 +94,10 @@ below is remappable; see [Configuration](#configuration).
 
 | Key         | Action                                    |
 | ----------- | ----------------------------------------- |
-| `j` / `k`   | Move down / up                            |
-| `g g` / `G` | Jump to top / bottom                      |
+| `j` / `k` / `↓` / `↑` | Move down / up                 |
+| `g g` / `G` / `home` / `end` | Jump to top / bottom      |
 | `ctrl-d` / `ctrl-u` | Half page down / up                |
-| `ctrl-f` / `ctrl-b` | Page down / up                     |
+| `ctrl-f` / `ctrl-b` / `pgdn` / `pgup` | Page down / up      |
 | `J` / `K`   | Scroll preview down / up                  |
 | `/`         | Focus the always-visible search bar; `enter` keeps, `esc` reverts |
 | `n` / `N`   | Next / previous result (wraps)            |
@@ -121,6 +121,10 @@ below is remappable; see [Configuration](#configuration).
 `ctrl-c` quits outside the inline editor; inside the editor it is copy.
 `esc` clears the pending key sequence or the active search. Modals capture keys,
 so `a`, `d`, and friends are literal text there.
+
+Arrow keys, `home`/`end`, and `pageup`/`pagedown` always navigate the list, even
+if you remap the vim-style bindings. In dialogs they cycle choices and fields; in
+the editor they move the cursor. `[keys]` remaps the named actions only.
 
 ### Search
 

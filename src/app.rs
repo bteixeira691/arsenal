@@ -746,6 +746,22 @@ impl App {
             }
             return;
         }
+        // Standard terminal navigation stays available alongside the vim
+        // bindings, independent of how the keymap is configured.
+        let arrow_action = match key.code {
+            KeyCode::Up => Some(Action::Up),
+            KeyCode::Down => Some(Action::Down),
+            KeyCode::Home => Some(Action::Top),
+            KeyCode::End => Some(Action::Bottom),
+            KeyCode::PageUp => Some(Action::PageUp),
+            KeyCode::PageDown => Some(Action::PageDown),
+            _ => None,
+        };
+        if let Some(action) = arrow_action {
+            self.pending.clear();
+            self.run_action(action);
+            return;
+        }
         let Some(chord) = Chord::from_event(key) else {
             return;
         };
@@ -1566,6 +1582,42 @@ mod tests {
         assert_eq!(app.filtered.len(), 3);
         app.on_key(key(KeyCode::Char('0')));
         assert_eq!(app.kind_filter, None);
+    }
+
+    #[test]
+    fn arrow_keys_navigate_alongside_vim_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let agents = dir.path().join("agents");
+        fs::create_dir_all(&agents).unwrap();
+        for name in ["alpha", "bravo", "charlie", "delta", "echo"] {
+            fs::write(
+                agents.join(format!("{name}.md")),
+                format!("---\nname: {name}\ndescription: {name}\n---\n"),
+            )
+            .unwrap();
+        }
+        let mut app = app_with_sources(dir.path());
+        app.list_height = 2;
+        assert_eq!(app.filtered.len(), 5);
+
+        app.on_key(key(KeyCode::Down));
+        assert_eq!(app.selected, 1);
+        app.on_key(key(KeyCode::Down));
+        assert_eq!(app.selected, 2);
+        app.on_key(key(KeyCode::Up));
+        assert_eq!(app.selected, 1);
+        app.on_key(key(KeyCode::End));
+        assert_eq!(app.selected, 4);
+        app.on_key(key(KeyCode::Home));
+        assert_eq!(app.selected, 0);
+        app.on_key(key(KeyCode::PageDown));
+        assert_eq!(app.selected, 1);
+        app.on_key(key(KeyCode::PageUp));
+        assert_eq!(app.selected, 0);
+
+        // Vim keys still work on the same state.
+        app.on_key(key(KeyCode::Char('j')));
+        assert_eq!(app.selected, 1);
     }
 
     #[test]

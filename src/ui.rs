@@ -1004,6 +1004,24 @@ fn confirm_modal(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
     f.render_widget(Paragraph::new(Text::from(lines)), inner);
 }
 
+fn help_key_text(app: &App, action: Action) -> String {
+    let configured = app.keys.display_or_dash(action);
+    let alias = match action {
+        Action::Up => Some("↑"),
+        Action::Down => Some("↓"),
+        Action::Top => Some("home"),
+        Action::Bottom => Some("end"),
+        Action::PageUp => Some("pgup"),
+        Action::PageDown => Some("pgdn"),
+        _ => None,
+    };
+    match alias {
+        Some(alias) if configured == "—" => alias.to_string(),
+        Some(alias) => format!("{configured} / {alias}"),
+        None => configured,
+    }
+}
+
 fn help_modal(f: &mut Frame, area: Rect, app: &mut App, theme: &ResolvedTheme) {
     let width = (area.width.saturating_sub(4)).min(78);
     let height = (area.height.saturating_sub(2)).min(30);
@@ -1030,7 +1048,7 @@ fn help_modal(f: &mut Frame, area: Rect, app: &mut App, theme: &ResolvedTheme) {
         for action in actions.iter() {
             lines.push(Line::from(vec![
                 Span::styled(
-                    format!("   {:<14}", app.keys.display_or_dash(*action)),
+                    format!("   {:<18}", help_key_text(app, *action)),
                     Style::new().fg(Color::Reset),
                 ),
                 Span::styled(action.label(), Style::new().fg(theme.muted)),
