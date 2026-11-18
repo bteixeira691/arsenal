@@ -654,7 +654,7 @@ fn source_preview(f: &mut Frame, area: Rect, app: &mut App, theme: &ResolvedThem
     let mut assets: Vec<&str> = app
         .assets
         .iter()
-        .filter(|asset| asset.source == display)
+        .filter(|asset| asset.source == row.path)
         .map(|asset| asset.name.as_str())
         .collect();
     assets.sort_unstable();
@@ -1248,7 +1248,7 @@ fn form_modal(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
     let mut source_spans = vec![Span::styled(format!("{:<12}", "source"), label)];
     let source_value = form
         .source(&app.cfg)
-        .map(|source| source.display())
+        .map(|source| source.display_with_path())
         .unwrap_or_else(|| "— no source configured —".to_string());
     let source_width = inner.width.saturating_sub(13) as usize;
     let source_value = truncate_width(&source_value, source_width);
@@ -1424,7 +1424,7 @@ fn install_modal(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
 
     let source_value = form
         .source(&app.cfg)
-        .map(|source| source.display())
+        .map(|source| source.display_with_path())
         .unwrap_or_else(|| "— no source configured for this kind —".to_string());
     let source_value = truncate_width(&source_value, field_width);
     let mut source_spans = vec![Span::styled(format!("{:<10}", "source"), label)];

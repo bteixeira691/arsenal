@@ -101,25 +101,32 @@ On first launch Arsenal writes a commented config to
   stem. Displayed description: frontmatter `description`, then the first prose
   line of the body.
 
-## Default sources
+## Integrations
 
-For each of skills, agents, commands, and rules:
+Arsenal discovers the documented user and project roots for the main agent
+tools. Sources are labeled in the Sources tab and install form.
 
-```text
-~/.claude/<kind>s
-~/.omp/agent/<kind>s
-~/.agent/<kind>s
-~/.agents/<kind>s
-./.claude/<kind>s
-./.omp/<kind>s
-./.agent/<kind>s
-./.agents/<kind>s
-```
+| Integration | User root | Project root | Kinds |
+| --- | --- | --- | --- |
+| OMP | `~/.omp/agent` | `./.omp` | skills, agents, commands, rules |
+| Claude Code | `~/.claude` | `./.claude` | skills, agents, commands, rules |
+| OpenCode | `~/.config/opencode` | `./.opencode` | skills, agents, commands |
+| Codex | `~/.codex` | `./.codex` | skills, agents, commands |
+| Gemini CLI | `~/.gemini` | `./.gemini` | skills |
+| Agents | `~/.agents`, `~/.agent` | `./.agents`, `./.agent` | skills, agents, commands, rules |
+| GitHub | — | `./.github` | skills |
+
+Each root follows the tool's normal `<kind>s/` layout, for example
+`~/.config/opencode/skills/<name>/SKILL.md`. Existing configs pick up
+integration roots whose base directory already exists. Missing directories are
+ignored; add custom roots with `A`, `arsenal sources add`, or `[[sources]]`.
+
+`arsenal integrations` prints the full path/status matrix; `--json` emits one
+object per root.
 
 Snippets default to `~/.config/arsenal/snippets` and `./.arsenal/snippets`.
-Missing directories are ignored. Duplicate paths are scanned once. `--root`
-replaces the configured source list entirely, which is handy for a single
-project.
+Duplicate paths are scanned once. `--root` replaces the configured source list
+entirely, which is handy for a single project.
 
 ## Adding extra skill folders
 
@@ -276,22 +283,18 @@ Behavior:
 - Agents, commands, rules, and snippets install a single `*.md` file. The
   resolver prefers `--name.md`, then `<repo>.md`, then the only non-README
   Markdown file in the selected directory.
-- The destination defaults to the first configured source for the kind. With the
-  stock configuration that is `~/.claude/skills` for skills and
-  `~/.claude/agents` for agents, which Claude Code discovers immediately.
-- omp's native roots are `~/.omp/agent/skills`, `~/.omp/agent/agents`,
-  `~/.omp/agent/commands`, and `~/.omp/agent/rules`. Choose that source in the
-  install form (or pass `--dest`) when the asset is for omp.
-- omp only reads foreign `~/.claude` user skills when `~/.omp/agent/config.yml`
-  opts in:
+- The destination defaults to the OMP-native source (`~/.omp/agent/<kind>s`) if
+  configured, otherwise the first configured source for the kind. Choose another
+  integration in the install form or pass `--dest`.
+- omp reads its native roots directly. It only reads foreign `~/.claude` user
+  skills when `~/.omp/agent/config.yml` opts in:
 
   ```yaml
   enabledProviders:
     - claude
   ```
 
-  Without that, install into `~/.omp/agent/<kind>s` or the skill will not appear
-  in `omp skill list`. Project-local `.claude` sources do not need this opt-in.
+  Project-local `.claude` sources do not need this opt-in.
 - Add any other root as a `[[sources]]` entry to make it selectable.
 - Nothing is executed during install: it is a clone plus a file copy.
 
@@ -365,14 +368,16 @@ arsenal install <URL|owner/repo> [--kind KIND] [--dest PATH] [--name NAME]
 arsenal sources list [--json]
 arsenal sources add <PATH> [--kind KIND]
 arsenal sources remove <PATH> [--kind KIND]
+arsenal integrations [--json]
 arsenal config path
 arsenal config init [--force]
 arsenal config validate
 ```
 
-`list` prints `kind  name  path` columns; `--json` emits one object per asset
-with `kind`, `name`, `description`, `tags`, `path`, `source`, and `modified`
-(Unix seconds). Scan warnings go to stderr.
+`integrations` prints every supported tool/kind root with `ok` or `missing`;
+`--json` emits one object per root. `list` prints `kind  name  path` columns;
+`--json` emits one object per asset with `kind`, `name`, `description`, `tags`,
+`path`, `source`, and `modified` (Unix seconds). Scan warnings go to stderr.
 
 `config validate` parses the file, reports invalid colors/keys/presets, and exits
 non-zero only when the file cannot be read or parsed.

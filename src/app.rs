@@ -367,6 +367,10 @@ impl InstallForm {
             .filter(|(_, source)| source.kind == self.kind)
             .map(|(index, _)| index)
             .collect();
+        let preferred = preferred.or_else(|| {
+            cfg.install_source(self.kind)
+                .map(|source| source.path.as_str())
+        });
         self.source_pos = preferred
             .and_then(|path| {
                 self.source_options
@@ -771,7 +775,7 @@ impl App {
                 assets: self
                     .assets
                     .iter()
-                    .filter(|asset| asset.source == display)
+                    .filter(|asset| asset.source == source.path)
                     .count(),
                 label: source.label.clone(),
             });

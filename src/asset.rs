@@ -355,7 +355,7 @@ pub fn scan(sources: &[Source], behavior: &Behavior) -> ScanReport {
             if !seen.insert(canonical) {
                 continue;
             }
-            match Asset::load(&path, source.kind, &source.display()) {
+            match Asset::load(&path, source.kind, &source.path) {
                 Ok(asset) => assets.push(asset),
                 Err(error) => warn(&mut warnings, format!("{}: {error}", path.display())),
             }

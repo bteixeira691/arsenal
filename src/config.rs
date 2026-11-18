@@ -1,6 +1,6 @@
 //! Configuration model, path resolution, and theme resolution.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::io::ErrorKind;
@@ -41,6 +41,17 @@ impl Default for Config {
 }
 
 impl Config {
+    /// Installation target for a kind. Prefer OMP's native root so installed
+    /// assets are immediately visible to OMP; fall back to the first configured
+    /// source.
+    pub fn install_source(&self, kind: Kind) -> Option<&Source> {
+        let omp = home_dir().join(".omp/agent").join(kind.plural());
+        self.sources
+            .iter()
+            .find(|source| source.kind == kind && source.resolved() == omp)
+            .or_else(|| self.sources.iter().find(|source| source.kind == kind))
+    }
+
     /// Merge defaults for partial maps and clamp nonsensical values. Returns
     /// human-readable warnings (also used by `arsenal config validate`).
     pub fn normalize(&mut self) -> Vec<String> {
@@ -72,7 +83,7 @@ impl Config {
         }
 
         let mut sources = Vec::new();
-        for source in std::mem::take(&mut self.sources) {
+        for mut source in std::mem::take(&mut self.sources) {
             if source.path.trim().is_empty() {
                 warnings.push("ignoring source with an empty path".into());
                 continue;
@@ -84,6 +95,20 @@ impl Config {
                     "source `{}`: depth {depth} out of range 1..=12; clamping",
                     source.path
                 ));
+            }
+            if source.label.is_none() {
+                source.label =
+                    crate::integrations::label_for_path(&source.path).map(str::to_string);
+            }
+            sources.push(source);
+        }
+        let known: BTreeSet<(Kind, PathBuf)> = sources
+            .iter()
+            .map(|source| (source.kind, source.resolved()))
+            .collect();
+        for source in crate::integrations::existing_sources() {
+            if known.contains(&(source.kind, source.resolved())) {
+                continue;
             }
             sources.push(source);
         }
@@ -424,6 +449,13 @@ impl Source {
         self.label.clone().unwrap_or_else(|| self.path.clone())
     }
 
+    pub fn display_with_path(&self) -> String {
+        match &self.label {
+            Some(label) => format!("{label} · {}", self.path),
+            None => self.path.clone(),
+        }
+    }
+
     pub fn resolved(&self) -> PathBuf {
         expand_path(&self.path)
     }
@@ -444,26 +476,7 @@ impl Source {
 }
 
 fn default_sources() -> Vec<Source> {
-    let mut sources = Vec::new();
-    for (kind, dir) in [
-        (Kind::Skill, "skills"),
-        (Kind::Agent, "agents"),
-        (Kind::Command, "commands"),
-        (Kind::Rule, "rules"),
-    ] {
-        for base in [
-            format!("~/.claude/{dir}"),
-            format!("~/.omp/agent/{dir}"),
-            format!("~/.agent/{dir}"),
-            format!("~/.agents/{dir}"),
-            format!("./.claude/{dir}"),
-            format!("./.omp/{dir}"),
-            format!("./.agent/{dir}"),
-            format!("./.agents/{dir}"),
-        ] {
-            sources.push(Source::new(kind, base));
-        }
-    }
+    let mut sources = crate::integrations::sources();
     sources.push(Source::new(Kind::Snippet, "~/.config/arsenal/snippets"));
     sources.push(Source::new(Kind::Snippet, "./.arsenal/snippets"));
     sources
@@ -833,7 +846,26 @@ mod tests {
         assert!(warnings.iter().any(|w| w.contains("neon")));
         assert!(warnings.iter().any(|w| w.contains("not-a-color")));
         assert!(warnings.iter().any(|w| w.contains("empty path")));
-        assert!(config.sources.is_empty());
+        assert!(
+            config
+                .sources
+                .iter()
+                .all(|source| !source.path.trim().is_empty())
+        );
+    }
+
+    #[test]
+    fn install_source_prefers_omp_native_root() {
+        let config = Config {
+            sources: vec![
+                Source::new(Kind::Skill, "~/.claude/skills"),
+                Source::new(Kind::Skill, "~/.omp/agent/skills"),
+                Source::new(Kind::Skill, "~/.agents/skills"),
+            ],
+            ..Config::default()
+        };
+        let source = config.install_source(Kind::Skill).unwrap();
+        assert_eq!(source.path, "~/.omp/agent/skills");
     }
 
     #[test]

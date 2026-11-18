@@ -5,6 +5,7 @@ mod asset;
 mod config;
 mod editor;
 mod install;
+mod integrations;
 mod keys;
 mod search;
 mod ui;
@@ -91,6 +92,12 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// List supported agent-tool integration roots
+    Integrations {
+        /// Emit JSON (one object per root) for scripting
+        #[arg(long)]
+        json: bool,
+    },
     /// Inspect or initialize the configuration
     Config {
         #[command(subcommand)]
@@ -154,6 +161,7 @@ fn main() {
 fn run(cli: Cli) -> Result<()> {
     let config_path = config::config_path(cli.config.as_deref());
     match cli.command {
+        Some(Command::Integrations { json }) => integrations_command(json),
         Some(Command::Config { action }) => config_command(&action, &config_path),
         Some(Command::Sources { action }) => sources_command(&action, &config_path),
         Some(Command::List {
@@ -203,9 +211,7 @@ fn run(cli: Cli) -> Result<()> {
             let dest = match dest {
                 Some(path) => config::expand_path(&path.to_string_lossy()),
                 None => cfg
-                    .sources
-                    .iter()
-                    .find(|source| source.kind == kind)
+                    .install_source(kind)
                     .map(Source::resolved)
                     .ok_or_else(|| {
                         anyhow::anyhow!(
@@ -248,6 +254,52 @@ struct SourceOut {
     path: String,
     resolved: String,
     exists: bool,
+}
+
+fn integrations_command(json: bool) -> Result<()> {
+    #[derive(Serialize)]
+    struct Root {
+        id: &'static str,
+        integration: &'static str,
+        kind: &'static str,
+        path: String,
+        exists: bool,
+    }
+
+    let roots = integrations::roots();
+    if json {
+        for (integration, kind, path, exists) in roots {
+            let row = Root {
+                id: integration.id,
+                integration: integration.name,
+                kind: kind.as_str(),
+                path: compact_home(&path),
+                exists,
+            };
+            println!("{}", serde_json::to_string(&row)?);
+        }
+        return Ok(());
+    }
+
+    println!("{:<12} {:<8} {:<8} PATH", "INTEGRATION", "KIND", "STATUS");
+    for (integration, kind, path, exists) in roots {
+        println!(
+            "{:<12} {:<8} {:<8} {}",
+            integration.name,
+            kind.as_str(),
+            if exists { "ok" } else { "missing" },
+            compact_home(&path)
+        );
+    }
+    Ok(())
+}
+
+fn compact_home(path: &Path) -> String {
+    let home = config::home_dir();
+    match path.strip_prefix(&home) {
+        Ok(relative) => format!("~/{}", relative.display()),
+        Err(_) => path.display().to_string(),
+    }
 }
 
 fn sources_command(action: &SourcesAction, config_path: &Path) -> Result<()> {
