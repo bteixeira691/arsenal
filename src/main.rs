@@ -11,6 +11,7 @@ mod search;
 mod ui;
 
 use std::collections::BTreeMap;
+use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, UNIX_EPOCH};
@@ -24,7 +25,7 @@ use ratatui::DefaultTerminal;
 use serde::Serialize;
 
 use crate::app::{App, Effect};
-use crate::asset::Kind;
+use crate::asset::{Asset, Kind};
 use crate::config::{Config, Level, Source};
 use crate::search::SortMode;
 
@@ -91,6 +92,17 @@ enum Command {
         /// Replace an existing destination (moves it to trash)
         #[arg(long)]
         force: bool,
+    },
+    /// Remove an installed asset (moves it to trash by default)
+    Uninstall {
+        /// Asset name or path
+        asset: String,
+        /// Restrict removal to one kind
+        #[arg(long, value_name = "KIND")]
+        kind: Option<String>,
+        /// Permanently delete instead of moving to trash
+        #[arg(long)]
+        purge: bool,
     },
     /// List supported agent-tool integration roots
     Integrations {
@@ -240,6 +252,19 @@ fn run(cli: Cli) -> Result<()> {
             );
             Ok(())
         }
+        Some(Command::Uninstall { asset, kind, purge }) => {
+            let (cfg, warnings) = load_config(&config_path, &cli.roots)?;
+            for warning in warnings {
+                eprintln!("warning: {warning}");
+            }
+            let kind = match kind {
+                Some(value) => Some(Kind::parse_loose(&value).ok_or_else(|| {
+                    anyhow::anyhow!("unknown kind `{value}` (skill, agent, command, rule, snippet)")
+                })?),
+                None => None,
+            };
+            uninstall_asset(&cfg, &asset, kind, purge)
+        }
         None => {
             let (cfg, warnings) = load_config(&config_path, &cli.roots)?;
             let app = App::new(cfg, config_path, warnings, cli.query.unwrap_or_default());
@@ -300,6 +325,99 @@ fn compact_home(path: &Path) -> String {
         Ok(relative) => format!("~/{}", relative.display()),
         Err(_) => path.display().to_string(),
     }
+}
+
+fn canonical_or(path: &Path) -> PathBuf {
+    fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn removal_target(asset: &Asset) -> PathBuf {
+    if asset.kind == Kind::Skill
+        && asset
+            .path
+            .file_name()
+            .is_some_and(|name| name == "SKILL.md")
+        && let Some(parent) = asset.path.parent()
+        && canonical_or(parent) != canonical_or(&config::expand_path(&asset.source))
+    {
+        return parent.to_path_buf();
+    }
+    asset.path.clone()
+}
+
+fn uninstall_asset(cfg: &Config, query: &str, kind: Option<Kind>, purge: bool) -> Result<()> {
+    let query = query.trim();
+    if query.is_empty() {
+        anyhow::bail!("asset name or path is empty");
+    }
+    let report = asset::scan(&cfg.sources, &cfg.behavior);
+    for warning in &report.warnings {
+        eprintln!("warning: {warning}");
+    }
+    let target = config::expand_path(query);
+    let target_path = canonical_or(&target);
+    let mut matches: Vec<&Asset> = report
+        .assets
+        .iter()
+        .filter(|asset| {
+            kind.is_none_or(|kind| asset.kind == kind)
+                && (asset.name.eq_ignore_ascii_case(query)
+                    || canonical_or(&asset.path) == target_path
+                    || (asset.kind == Kind::Skill
+                        && asset
+                            .path
+                            .parent()
+                            .is_some_and(|parent| canonical_or(parent) == target_path)))
+        })
+        .collect();
+    matches.sort_by(|left, right| {
+        left.kind
+            .cmp(&right.kind)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    let asset = match matches.as_slice() {
+        [] => anyhow::bail!("no asset matches `{query}`"),
+        [asset] => *asset,
+        many => {
+            let candidates = many
+                .iter()
+                .map(|asset| {
+                    format!(
+                        "  {}  {}\n    {}",
+                        asset.kind.as_str(),
+                        asset.name,
+                        asset.path.display()
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            anyhow::bail!(
+                "multiple assets match `{query}`; narrow with --kind or use a path:\n{candidates}"
+            );
+        }
+    };
+    let target = removal_target(asset);
+    let trashed = if purge || !cfg.behavior.trash {
+        if target.is_dir() {
+            fs::remove_dir_all(&target)
+                .with_context(|| format!("removing {}", target.display()))?;
+        } else {
+            fs::remove_file(&target).with_context(|| format!("removing {}", target.display()))?;
+        }
+        None
+    } else {
+        Some(asset::trash_path(&target, &config::data_dir()).map_err(anyhow::Error::msg)?)
+    };
+    println!(
+        "uninstalled {} `{}` from {}{}",
+        asset.kind.as_str(),
+        asset.name,
+        target.display(),
+        trashed
+            .map(|path| format!(" (trash: {})", path.display()))
+            .unwrap_or_default()
+    );
+    Ok(())
 }
 
 fn sources_command(action: &SourcesAction, config_path: &Path) -> Result<()> {

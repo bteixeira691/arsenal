@@ -371,6 +371,7 @@ arsenal [--config PATH] [--root KIND=PATH]... [--query QUERY]
 arsenal list [--json] [--kind KIND] [--sort MODE] [--content]
 arsenal install <URL|owner/repo> [--kind KIND] [--dest PATH] [--name NAME]
                 [--ref REF] [--subdir PATH] [--force]
+arsenal uninstall <NAME|PATH> [--kind KIND] [--purge]
 arsenal sources list [--json]
 arsenal sources add <PATH> [--kind KIND]
 arsenal sources remove <PATH> [--kind KIND]
@@ -384,6 +385,11 @@ arsenal config validate
 `--json` emits one object per root. `list` prints `kind  name  path` columns;
 `--json` emits one object per asset with `kind`, `name`, `description`, `tags`,
 `path`, `source`, and `modified` (Unix seconds). Scan warnings go to stderr.
+
+`uninstall` accepts an exact asset name or path, filters by `--kind` when names
+collide, and moves the skill directory or single file to the Arsenal trash. Pass
+`--purge` to delete permanently. It refuses ambiguous matches and paths that are
+not part of the configured sources.
 
 `config validate` parses the file, reports invalid colors/keys/presets, and exits
 non-zero only when the file cannot be read or parsed.
