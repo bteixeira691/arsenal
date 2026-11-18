@@ -12,7 +12,7 @@ mod ui;
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -95,8 +95,8 @@ enum Command {
     },
     /// Remove an installed asset (moves it to trash by default)
     Uninstall {
-        /// Asset name or path
-        asset: String,
+        /// Asset name or path; omit to choose interactively
+        asset: Option<String>,
         /// Restrict removal to one kind
         #[arg(long, value_name = "KIND")]
         kind: Option<String>,
@@ -263,7 +263,7 @@ fn run(cli: Cli) -> Result<()> {
                 })?),
                 None => None,
             };
-            uninstall_asset(&cfg, &asset, kind, purge)
+            uninstall_asset(&cfg, asset.as_deref(), kind, purge)
         }
         None => {
             let (cfg, warnings) = load_config(&config_path, &cli.roots)?;
@@ -345,57 +345,117 @@ fn removal_target(asset: &Asset) -> PathBuf {
     asset.path.clone()
 }
 
-fn uninstall_asset(cfg: &Config, query: &str, kind: Option<Kind>, purge: bool) -> Result<()> {
-    let query = query.trim();
-    if query.is_empty() {
-        anyhow::bail!("asset name or path is empty");
-    }
+fn uninstall_asset(
+    cfg: &Config,
+    query: Option<&str>,
+    kind: Option<Kind>,
+    purge: bool,
+) -> Result<()> {
     let report = asset::scan(&cfg.sources, &cfg.behavior);
     for warning in &report.warnings {
         eprintln!("warning: {warning}");
     }
-    let target = config::expand_path(query);
-    let target_path = canonical_or(&target);
-    let mut matches: Vec<&Asset> = report
+    let mut candidates: Vec<&Asset> = report
         .assets
         .iter()
-        .filter(|asset| {
-            kind.is_none_or(|kind| asset.kind == kind)
-                && (asset.name.eq_ignore_ascii_case(query)
+        .filter(|asset| kind.is_none_or(|kind| asset.kind == kind))
+        .collect();
+    if candidates.is_empty() {
+        anyhow::bail!("no installed assets found");
+    }
+    candidates.sort_by(|left, right| {
+        left.kind
+            .cmp(&right.kind)
+            .then_with(|| left.name.cmp(&right.name))
+            .then_with(|| left.path.cmp(&right.path))
+    });
+
+    let selected = if let Some(query) = query {
+        let query = query.trim();
+        if query.is_empty() {
+            anyhow::bail!("asset name or path is empty");
+        }
+        let target = config::expand_path(query);
+        let target_path = canonical_or(&target);
+        let mut matches: Vec<&Asset> = candidates
+            .iter()
+            .copied()
+            .filter(|asset| {
+                asset.name.eq_ignore_ascii_case(query)
                     || canonical_or(&asset.path) == target_path
                     || (asset.kind == Kind::Skill
                         && asset
                             .path
                             .parent()
-                            .is_some_and(|parent| canonical_or(parent) == target_path)))
-        })
-        .collect();
-    matches.sort_by(|left, right| {
-        left.kind
-            .cmp(&right.kind)
-            .then_with(|| left.name.cmp(&right.name))
-    });
-    let asset = match matches.as_slice() {
-        [] => anyhow::bail!("no asset matches `{query}`"),
-        [asset] => *asset,
-        many => {
-            let candidates = many
-                .iter()
-                .map(|asset| {
-                    format!(
-                        "  {}  {}\n    {}",
-                        asset.kind.as_str(),
-                        asset.name,
-                        asset.path.display()
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            anyhow::bail!(
-                "multiple assets match `{query}`; narrow with --kind or use a path:\n{candidates}"
+                            .is_some_and(|parent| canonical_or(parent) == target_path))
+            })
+            .collect();
+        matches.sort_by(|left, right| {
+            left.kind
+                .cmp(&right.kind)
+                .then_with(|| left.name.cmp(&right.name))
+        });
+        match matches.as_slice() {
+            [] => anyhow::bail!("no asset matches `{query}`"),
+            [asset] => *asset,
+            many => {
+                let listing = many
+                    .iter()
+                    .map(|asset| {
+                        format!(
+                            "  {}  {}\n    {}",
+                            asset.kind.as_str(),
+                            asset.name,
+                            asset.path.display()
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                anyhow::bail!(
+                    "multiple assets match `{query}`; narrow with --kind or use a path:\n{listing}"
+                );
+            }
+        }
+    } else {
+        if !io::stdin().is_terminal() {
+            anyhow::bail!("asset name or path is required when stdin is not a terminal");
+        }
+        println!("Installed assets:");
+        for (index, asset) in candidates.iter().enumerate() {
+            println!(
+                "  {:>2}. {:<8} {:<32} {}",
+                index + 1,
+                asset.kind.as_str(),
+                asset.name,
+                asset.path.display()
             );
         }
+        print!(
+            "Uninstall which asset? [1-{}] (empty cancels): ",
+            candidates.len()
+        );
+        io::stdout().flush().context("writing prompt")?;
+        let mut line = String::new();
+        io::stdin()
+            .read_line(&mut line)
+            .context("reading selection")?;
+        let line = line.trim();
+        if line.is_empty() {
+            println!("cancelled");
+            return Ok(());
+        }
+        let index: usize = line
+            .parse()
+            .with_context(|| format!("invalid selection `{line}`"))?;
+        *candidates
+            .get(index.saturating_sub(1))
+            .ok_or_else(|| anyhow::anyhow!("selection {index} is out of range"))?
     };
+
+    uninstall_selected(cfg, selected, purge)
+}
+
+fn uninstall_selected(cfg: &Config, asset: &Asset, purge: bool) -> Result<()> {
     let target = removal_target(asset);
     let trashed = if purge || !cfg.behavior.trash {
         if target.is_dir() {

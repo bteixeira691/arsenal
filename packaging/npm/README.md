@@ -25,6 +25,7 @@ npm uninstall -g arsenal-tui
 Remove an asset that Arsenal installed or manages:
 
 ```sh
+arsenal uninstall              # choose from the installed asset list
 arsenal uninstall <name-or-path>
 arsenal uninstall <name-or-path> --kind skill
 arsenal uninstall <name-or-path> --purge
