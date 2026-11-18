@@ -80,6 +80,12 @@ bun pm pack --dry-run     # inspect files without auth
 bun publish               # unscoped package is public by default
 ```
 
+Backfill an existing release without moving its tag:
+
+```sh
+gh workflow run publish.yml -f tag=v0.6.1
+```
+
 `bun publish --tag next` handles prereleases. Do not pass `--provenance`: Bun
 1.3.x rejects it.
 
