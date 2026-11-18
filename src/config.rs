@@ -441,13 +441,21 @@ fn default_sources() -> Vec<Source> {
         (Kind::Command, "commands"),
         (Kind::Rule, "rules"),
     ] {
-        sources.push(Source::new(kind, format!("~/.claude/{dir}")));
-        sources.push(Source::new(kind, format!("~/.config/omp/{dir}")));
-        sources.push(Source::new(kind, format!("./.claude/{dir}")));
-        sources.push(Source::new(kind, format!("./.omp/{dir}")));
+        for base in [
+            format!("~/.claude/{dir}"),
+            format!("~/.omp/agent/{dir}"),
+            format!("~/.agent/{dir}"),
+            format!("~/.agents/{dir}"),
+            format!("./.claude/{dir}"),
+            format!("./.omp/{dir}"),
+            format!("./.agent/{dir}"),
+            format!("./.agents/{dir}"),
+        ] {
+            sources.push(Source::new(kind, base));
+        }
     }
-    sources.push(Source::new(Kind::Snippet, "~/.config/omp/snippets"));
-    sources.push(Source::new(Kind::Snippet, "./.omp/snippets"));
+    sources.push(Source::new(Kind::Snippet, "~/.config/arsenal/snippets"));
+    sources.push(Source::new(Kind::Snippet, "./.arsenal/snippets"));
     sources
 }
 

@@ -2,11 +2,12 @@
 
 A terminal UI for the Markdown assets that power coding agents: **skills**,
 **agents**, **commands**, and **rules**. Browse, fuzzy-search, preview, create,
-edit, and delete them without leaving the keyboard.
+edit, delete — and install a skill straight from a GitHub link.
 
-Arsenal is local-first: everything is plain Markdown on disk. It never talks to a
-network service, never rewrites files behind your back, and never takes ownership
-of your content.
+Arsenal is local-first: everything is plain Markdown on disk. Apart from an
+explicit `arsenal install` (git clone), it never talks to a network service,
+never rewrites files behind your back, and never takes ownership of your
+content.
 
 ```text
  ARSENAL · agents  ~/.config/arsenal/config.toml                       2/7 assets
@@ -39,6 +40,7 @@ arsenal                                  # use the configured sources
 arsenal --root skill=./skills --root agent=./agents
 arsenal --query deploy                   # start with a search filter
 arsenal list --json | jq                 # scriptable, no TUI
+arsenal install https://github.com/anthropics/skills/tree/main/skills/pdf
 ```
 
 On first launch Arsenal writes a commented config to
@@ -70,14 +72,19 @@ For each of skills, agents, commands, and rules:
 
 ```text
 ~/.claude/<kind>s
-~/.config/omp/<kind>s
+~/.omp/agent/<kind>s
+~/.agent/<kind>s
+~/.agents/<kind>s
 ./.claude/<kind>s
 ./.omp/<kind>s
+./.agent/<kind>s
+./.agents/<kind>s
 ```
 
-Snippets default to `~/.config/omp/snippets` and `./.omp/snippets`. Missing
-directories are ignored. Duplicate paths are scanned once. `--root` replaces the
-configured source list entirely, which is handy for a single project.
+Snippets default to `~/.config/arsenal/snippets` and `./.arsenal/snippets`.
+Missing directories are ignored. Duplicate paths are scanned once. `--root`
+replaces the configured source list entirely, which is handy for a single
+project.
 
 ## Keymaps
 
@@ -98,6 +105,7 @@ below is remappable; see [Configuration](#configuration).
 | `t`         | Toggle the preview pane                   |
 | `T`         | Cycle theme: dark, light, mono            |
 | `a`         | Create an asset                           |
+| `i`         | Install a skill/asset from a GitHub URL   |
 | `e`         | Edit in `$EDITOR` (TUI suspends)          |
 | `d`         | Delete (confirmation, moves to trash)     |
 | `y`         | Copy the path with OSC 52                 |
@@ -125,6 +133,56 @@ Results are ranked by match score; with an empty query the list follows the
 current sort mode. The header shows `visible/total assets` and the active kind
 filter.
 
+## Installing from GitHub
+
+`i` (or `:install <url>`) opens the install form. Paste a GitHub repository or
+tree URL, choose the kind and destination source, and press `enter`. The clone
+runs in the foreground with git's progress visible; when it finishes the TUI
+reloads, selects the new asset, and reports where it landed.
+
+```sh
+# a skill inside a monorepo (tree URL)
+arsenal install https://github.com/anthropics/skills/tree/main/skills/pdf
+
+# repository root that is itself a skill
+arsenal install https://github.com/owner/my-skill
+
+# blob URL for a single SKILL.md
+arsenal install https://github.com/owner/repo/blob/main/skills/pdf/SKILL.md
+
+# other kinds, explicit destination, renamed install
+arsenal install https://github.com/owner/agents --kind agent --dest ~/.claude/agents
+arsenal install owner/repo --subdir skills/deploy --name deploy
+
+# replace an existing install (old copy moves to trash)
+arsenal install <url> --force
+```
+
+Behavior:
+
+- Shallow `git clone --depth 1` into a temporary directory; only the selected
+  asset is copied, and the clone is removed afterwards. `--ref` accepts a
+  branch, tag, or commit (falls back to a full clone for commit SHAs).
+- GitHub `tree/<ref>/<path>` and `blob/<ref>/<path>` URLs carry their own ref and
+  subdirectory. `owner/repo` shorthand and any git/ssh/file URL also work.
+- Skills are copied as whole directories, including `scripts/`, `references/`,
+  and other bundled files. The install name comes from `--name`, then the
+  skill's frontmatter `name`, then the directory or repository name.
+- If a repository contains several skills and none was selected, the error lists
+  the candidates; rerun with the tree URL or `--subdir`.
+- Agents, commands, rules, and snippets install a single `*.md` file. The
+  resolver prefers `--name.md`, then `<repo>.md`, then the only non-README
+  Markdown file in the selected directory.
+- The destination defaults to the first configured source for the kind. With the
+  stock configuration that is `~/.claude/skills` for skills and
+  `~/.claude/agents` for agents, which Claude Code discovers immediately; omp's
+  Claude skill provider also reads `~/.claude/skills`. For omp-native agents,
+  commands, rules, or skills, install into `~/.omp/agent/skills`,
+  `~/.omp/agent/agents`, `~/.omp/agent/commands`, or `~/.omp/agent/rules` with
+  `--dest` (or the TUI source field). Add any other root as a `[[sources]]`
+  entry to make it selectable.
+- Nothing is executed during install: it is a clone plus a file copy.
+
 ## Creating assets
 
 `a` (or `:new agent`) opens a form:
@@ -150,6 +208,7 @@ filter.
 | Command               | Effect                                       |
 | --------------------- | -------------------------------------------- |
 | `:new <kind>`         | Open the create form (`skill` is the default)|
+| `:install <url>`      | Clone a skill/asset from GitHub              |
 | `:filter <kind\|all>` | Restrict the list                            |
 | `:sort <mode>`        | `kind`, `name`, `modified`, `path`           |
 | `:theme <preset>`     | `dark`, `light`, `mono`                      |
@@ -165,6 +224,8 @@ filter.
 ```text
 arsenal [--config PATH] [--root KIND=PATH]... [--query QUERY]
 arsenal list [--json] [--kind KIND] [--sort MODE]
+arsenal install <URL|owner/repo> [--kind KIND] [--dest PATH] [--name NAME]
+                [--ref REF] [--subdir PATH] [--force]
 arsenal config path
 arsenal config init [--force]
 arsenal config validate
@@ -298,6 +359,8 @@ statusline still reports that the sequence was sent.
 ## Design notes
 
 - Markdown and `SKILL.md` layouts are the source of truth; there is no database.
+- Installs clone to a temporary directory and copy only the chosen asset; the
+  clone is always deleted. No install scripts run.
 - No file watcher: `R` rescans explicitly, and every editor round-trip rescans.
 - No mouse capture, so the terminal's native selection and copy keep working.
 - Previews are capped at 4,000 body lines; very large files stay responsive.
@@ -323,11 +386,12 @@ src/keys.rs    chords, sequences, actions, keymap resolution
 src/search.rs  fuzzy scoring and ordering
 src/ui.rs      rendering
 src/editor.rs  $EDITOR and file-manager integration
+src/install.rs git cloning, URL parsing, asset resolution
 ```
 
 Unit tests cover frontmatter fallbacks, scanning, scaffolding, trash, fuzzy
-filtering, sorting, key sequences, UTF-8 text editing, form validation, and
-delete confirmation.
+filtering, sorting, key sequences, UTF-8 text editing, form validation, delete
+confirmation, GitHub URL parsing, and install/force/ambiguity cases.
 
 ## License
 

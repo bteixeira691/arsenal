@@ -279,6 +279,7 @@ pub enum Action {
     NextMatch,
     PrevMatch,
     Create,
+    Install,
     Edit,
     Delete,
     YankPath,
@@ -307,7 +308,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 32] = [
+    pub const ALL: [Action; 33] = [
         Action::Quit,
         Action::Help,
         Action::Command,
@@ -315,6 +316,7 @@ impl Action {
         Action::NextMatch,
         Action::PrevMatch,
         Action::Create,
+        Action::Install,
         Action::Edit,
         Action::Delete,
         Action::YankPath,
@@ -351,6 +353,7 @@ impl Action {
             Action::NextMatch => "next_match",
             Action::PrevMatch => "prev_match",
             Action::Create => "create",
+            Action::Install => "install",
             Action::Edit => "edit",
             Action::Delete => "delete",
             Action::YankPath => "yank_path",
@@ -388,6 +391,7 @@ impl Action {
             Action::NextMatch => "Next match",
             Action::PrevMatch => "Previous match",
             Action::Create => "Create asset",
+            Action::Install => "Install from git",
             Action::Edit => "Edit in $EDITOR",
             Action::Delete => "Delete (to trash)",
             Action::YankPath => "Copy path (OSC 52)",
@@ -432,6 +436,7 @@ pub const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     (Action::NextMatch, "n"),
     (Action::PrevMatch, "N"),
     (Action::Create, "a"),
+    (Action::Install, "i"),
     (Action::Edit, "e"),
     (Action::Delete, "d"),
     (Action::YankPath, "y"),

@@ -4,7 +4,7 @@ use ratatui::prelude::*;
 use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Wrap};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::app::{App, FormField, Mode, TextInput};
+use crate::app::{App, FormField, InstallField, Mode, TextInput};
 use crate::asset::{format_age, format_size};
 use crate::config::{Level, ResolvedTheme};
 use crate::keys::Action;
@@ -29,6 +29,7 @@ const HELP_GROUPS: &[(&str, &[Action])] = &[
         "Actions",
         &[
             Action::Create,
+            Action::Install,
             Action::Edit,
             Action::Delete,
             Action::YankPath,
@@ -96,6 +97,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     match app.mode {
         Mode::Form => form_modal(f, area, app, &theme),
+        Mode::Install => install_modal(f, area, app, &theme),
         Mode::Confirm => confirm_modal(f, area, app, &theme),
         Mode::Help => help_modal(f, area, app, &theme),
         _ => {}
@@ -460,6 +462,12 @@ fn status_bar(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
                 Style::new().fg(theme.muted),
             ));
         }
+        Mode::Install => {
+            spans.push(Span::styled(
+                " tab next · ←/→ change · enter install · esc cancel",
+                Style::new().fg(theme.muted),
+            ));
+        }
         Mode::Confirm => {
             spans.push(Span::styled(
                 " y delete · n cancel",
@@ -476,6 +484,7 @@ fn status_bar(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
             for (keys, label) in [
                 ("/", "search"),
                 ("a", "new"),
+                ("i", "install"),
                 ("e", "edit"),
                 ("d", "delete"),
                 ("?", "help"),
@@ -594,6 +603,115 @@ fn form_modal(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
     f.render_widget(Paragraph::new(Text::from(lines)), inner);
 }
 
+fn install_modal(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
+    let Some(form) = &app.install else {
+        return;
+    };
+    let width = (area.width.saturating_sub(4)).min(78);
+    let height = 11.min(area.height.saturating_sub(2));
+    let rect = centered(area, width, height);
+    f.render_widget(Clear, rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(theme.accent))
+        .title(Span::styled(
+            " Install from git ",
+            Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+
+    let label = Style::new().fg(theme.muted);
+    let field_width = inner.width.saturating_sub(11) as usize;
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    let mut url_spans = vec![Span::styled(format!("{:<10}", "url"), label)];
+    if form.focus == InstallField::Url {
+        url_spans.extend(input_spans_clipped(&form.url, theme, field_width));
+    } else if form.url.value.is_empty() {
+        url_spans.push(Span::styled(
+            "https://github.com/owner/repo or tree URL",
+            Style::new().fg(theme.border),
+        ));
+    } else {
+        url_spans.push(Span::styled(
+            truncate_width(&form.url.value, field_width),
+            Style::new().fg(Color::Reset),
+        ));
+    }
+    lines.push(Line::from(url_spans));
+
+    let mut kind_spans = vec![Span::styled(format!("{:<10}", "kind"), label)];
+    if form.focus == InstallField::Kind {
+        kind_spans.push(Span::styled(
+            format!("‹ {} ›", form.kind.as_str()),
+            Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+        ));
+    } else {
+        kind_spans.push(Span::styled(
+            form.kind.as_str().to_string(),
+            Style::new().fg(Color::Reset),
+        ));
+    }
+    lines.push(Line::from(kind_spans));
+
+    let source_value = form
+        .source(&app.cfg)
+        .map(|source| source.display())
+        .unwrap_or_else(|| "— no source configured for this kind —".to_string());
+    let source_value = truncate_width(&source_value, field_width);
+    let mut source_spans = vec![Span::styled(format!("{:<10}", "source"), label)];
+    if form.focus == InstallField::Source {
+        source_spans.push(Span::styled(
+            format!("‹ {source_value} ›"),
+            Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+        ));
+    } else {
+        source_spans.push(Span::styled(source_value, Style::new().fg(Color::Reset)));
+    }
+    lines.push(Line::from(source_spans));
+
+    let mut name_spans = vec![Span::styled(format!("{:<10}", "name"), label)];
+    if form.focus == InstallField::Name {
+        name_spans.extend(input_spans_clipped(&form.name, theme, field_width));
+    } else if form.name.value.is_empty() {
+        name_spans.push(Span::styled(
+            "default: repository or directory name",
+            Style::new().fg(theme.border),
+        ));
+    } else {
+        name_spans.push(Span::styled(
+            truncate_width(&form.name.value, field_width),
+            Style::new().fg(Color::Reset),
+        ));
+    }
+    lines.push(Line::from(name_spans));
+
+    lines.push(Line::from(""));
+    let message = form
+        .error
+        .clone()
+        .unwrap_or_else(|| "clones to a temp dir, copies only the selected asset".into());
+    lines.push(Line::from(Span::styled(
+        message,
+        Style::new()
+            .fg(if form.error.is_some() {
+                theme.error
+            } else {
+                theme.muted
+            })
+            .add_modifier(if form.error.is_some() {
+                Modifier::BOLD
+            } else {
+                Modifier::empty()
+            }),
+    )));
+
+    f.render_widget(Paragraph::new(Text::from(lines)), inner);
+}
+
 fn text_field_line(
     name: &str,
     input: &TextInput,
@@ -638,6 +756,52 @@ fn input_spans(input: &TextInput, theme: &ResolvedTheme) -> Vec<Span<'static>> {
                 .fg(theme.accent)
                 .add_modifier(Modifier::REVERSED),
         ));
+    }
+    spans
+}
+
+/// Render a text input within `max_width` characters, keeping the cursor
+/// visible by sliding the window. Used for long URLs.
+fn input_spans_clipped(
+    input: &TextInput,
+    theme: &ResolvedTheme,
+    max_width: usize,
+) -> Vec<Span<'static>> {
+    if max_width == 0 {
+        return Vec::new();
+    }
+    let chars: Vec<char> = input.value.chars().collect();
+    if chars.len() <= max_width {
+        return input_spans(input, theme);
+    }
+    let cursor = input.cursor.min(chars.len());
+    let start = cursor.saturating_sub(max_width.saturating_sub(1));
+    let end = (start + max_width).min(chars.len());
+    let mut spans = Vec::new();
+    if start > 0 {
+        spans.push(Span::styled("…", Style::new().fg(theme.border)));
+    }
+    for (offset, ch) in chars[start..end].iter().enumerate() {
+        let position = start + offset;
+        let style = if position == cursor {
+            Style::new()
+                .fg(theme.accent)
+                .add_modifier(Modifier::REVERSED)
+        } else {
+            Style::new().fg(Color::Reset)
+        };
+        spans.push(Span::styled(ch.to_string(), style));
+    }
+    if cursor >= chars.len() {
+        spans.push(Span::styled(
+            " ",
+            Style::new()
+                .fg(theme.accent)
+                .add_modifier(Modifier::REVERSED),
+        ));
+    }
+    if end < chars.len() {
+        spans.push(Span::styled("…", Style::new().fg(theme.border)));
     }
     spans
 }
@@ -738,6 +902,7 @@ fn help_modal(f: &mut Frame, area: Rect, app: &mut App, theme: &ResolvedTheme) {
     )));
     for command in [
         ":new <kind>        create a skill, agent, command, rule, or snippet",
+        ":install <url>     clone a skill or asset from GitHub",
         ":filter <kind|all> restrict the list",
         ":sort <mode>       kind | name | modified | path",
         ":theme <preset>    dark | light | mono",

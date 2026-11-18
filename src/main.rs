@@ -4,6 +4,7 @@ mod app;
 mod asset;
 mod config;
 mod editor;
+mod install;
 mod keys;
 mod search;
 mod ui;
@@ -64,6 +65,29 @@ enum Command {
         #[arg(long, value_name = "MODE", default_value = "kind")]
         sort: String,
     },
+    /// Clone a skill or other asset from GitHub/git into a source root
+    Install {
+        /// GitHub repository, tree, or blob URL, or owner/repo
+        source: String,
+        /// Asset kind: skill, agent, command, rule, snippet
+        #[arg(long, value_name = "KIND", default_value = "skill")]
+        kind: String,
+        /// Destination root (default: first configured source for the kind)
+        #[arg(long, value_name = "PATH")]
+        dest: Option<PathBuf>,
+        /// Override the installed name
+        #[arg(long)]
+        name: Option<String>,
+        /// Git branch, tag, or commit
+        #[arg(long = "ref", value_name = "REF")]
+        reference: Option<String>,
+        /// Path inside the repository
+        #[arg(long, value_name = "PATH")]
+        subdir: Option<String>,
+        /// Replace an existing destination (moves it to trash)
+        #[arg(long)]
+        force: bool,
+    },
     /// Inspect or initialize the configuration
     Config {
         #[command(subcommand)]
@@ -112,6 +136,56 @@ fn run(cli: Cli) -> Result<()> {
                 anyhow::anyhow!("unknown sort `{sort}` (kind, name, modified, path)")
             })?;
             list_assets(&cfg, cli.query.as_deref().unwrap_or(""), kind, sort, json)
+        }
+        Some(Command::Install {
+            source,
+            kind,
+            dest,
+            name,
+            reference,
+            subdir,
+            force,
+        }) => {
+            let (cfg, warnings) = load_config(&config_path, &cli.roots)?;
+            for warning in warnings {
+                eprintln!("warning: {warning}");
+            }
+            let kind = Kind::parse_loose(&kind).ok_or_else(|| {
+                anyhow::anyhow!("unknown kind `{kind}` (skill, agent, command, rule, snippet)")
+            })?;
+            let dest = match dest {
+                Some(path) => config::expand_path(&path.to_string_lossy()),
+                None => cfg
+                    .sources
+                    .iter()
+                    .find(|source| source.kind == kind)
+                    .map(Source::resolved)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "no source configured for {}s; add [[sources]] or pass --dest",
+                            kind.plural()
+                        )
+                    })?,
+            };
+            let request = install::Request {
+                url: source,
+                kind,
+                dest,
+                name,
+                reference,
+                subdir,
+                force,
+                trash_dir: None,
+            };
+            let installed = install::install(&request)?;
+            println!(
+                "installed {} `{}` ({} file(s)) -> {}",
+                installed.kind.as_str(),
+                installed.name,
+                installed.files,
+                installed.path.display()
+            );
+            Ok(())
         }
         None => {
             let (cfg, warnings) = load_config(&config_path, &cli.roots)?;
@@ -336,6 +410,12 @@ fn handle_effects(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
                 if let Err(error) = editor::reveal(&path) {
                     app.set_status(format!("Reveal failed: {error:#}"), Level::Error);
                 }
+            }
+            Effect::Install(request) => {
+                let _ = ratatui::try_restore();
+                let outcome = install::install(&request).map_err(|error| format!("{error:#}"));
+                *terminal = ratatui::try_init().context("re-initializing terminal")?;
+                app.after_install(outcome);
             }
         }
     }

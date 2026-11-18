@@ -9,6 +9,7 @@ use fuzzy_matcher::skim::SkimMatcherV2;
 
 use crate::asset::{self, Asset, CreateError, Kind};
 use crate::config::{self, Config, Level, Source};
+use crate::install;
 use crate::keys::{Action, Chord, Keymap, Resolution};
 use crate::search::{self, SortMode};
 
@@ -20,6 +21,7 @@ pub enum Mode {
     Search,
     Command,
     Form,
+    Install,
     Confirm,
     Help,
 }
@@ -31,6 +33,7 @@ impl Mode {
             Mode::Search => "SEARCH",
             Mode::Command => "COMMAND",
             Mode::Form => "FORM",
+            Mode::Install => "INSTALL",
             Mode::Confirm => "CONFIRM",
             Mode::Help => "HELP",
         }
@@ -249,6 +252,110 @@ impl Form {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum InstallField {
+    Url,
+    Kind,
+    Source,
+    Name,
+    Submit,
+}
+
+impl InstallField {
+    fn next(self) -> Self {
+        match self {
+            InstallField::Url => InstallField::Kind,
+            InstallField::Kind => InstallField::Source,
+            InstallField::Source => InstallField::Name,
+            InstallField::Name => InstallField::Submit,
+            InstallField::Submit => InstallField::Url,
+        }
+    }
+
+    fn prev(self) -> Self {
+        match self {
+            InstallField::Url => InstallField::Submit,
+            InstallField::Kind => InstallField::Url,
+            InstallField::Source => InstallField::Kind,
+            InstallField::Name => InstallField::Source,
+            InstallField::Submit => InstallField::Name,
+        }
+    }
+
+    fn is_choice(self) -> bool {
+        matches!(self, InstallField::Kind | InstallField::Source)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct InstallForm {
+    pub url: TextInput,
+    pub kind: Kind,
+    pub source_options: Vec<usize>,
+    pub source_pos: usize,
+    pub name: TextInput,
+    pub focus: InstallField,
+    pub error: Option<String>,
+}
+
+impl InstallForm {
+    pub fn new(cfg: &Config, kind: Kind) -> Self {
+        let mut form = InstallForm {
+            url: TextInput::default(),
+            kind,
+            source_options: Vec::new(),
+            source_pos: 0,
+            name: TextInput::default(),
+            focus: InstallField::Url,
+            error: None,
+        };
+        form.rebuild_sources(cfg, None);
+        form
+    }
+
+    fn rebuild_sources(&mut self, cfg: &Config, preferred: Option<&str>) {
+        self.source_options = cfg
+            .sources
+            .iter()
+            .enumerate()
+            .filter(|(_, source)| source.kind == self.kind)
+            .map(|(index, _)| index)
+            .collect();
+        self.source_pos = preferred
+            .and_then(|path| {
+                self.source_options
+                    .iter()
+                    .position(|&index| cfg.sources[index].path == path)
+            })
+            .unwrap_or(0);
+    }
+
+    pub fn source<'a>(&self, cfg: &'a Config) -> Option<&'a Source> {
+        self.source_options
+            .get(self.source_pos)
+            .map(|&index| &cfg.sources[index])
+    }
+
+    fn cycle(&mut self, cfg: &Config, delta: i32) {
+        match self.focus {
+            InstallField::Kind => {
+                let preferred = self.source(cfg).map(|source| source.path.clone());
+                let next = (self.kind.index() as i32 + delta).rem_euclid(Kind::ALL.len() as i32);
+                self.kind = Kind::ALL[next as usize];
+                self.rebuild_sources(cfg, preferred.as_deref());
+            }
+            InstallField::Source => {
+                let len = self.source_options.len();
+                if len > 0 {
+                    let next = (self.source_pos as i32 + delta).rem_euclid(len as i32);
+                    self.source_pos = next as usize;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Confirm {
     pub path: PathBuf,
@@ -267,6 +374,7 @@ pub enum Effect {
     EditAsset { path: PathBuf, line: usize },
     EditConfig,
     Reveal(PathBuf),
+    Install(install::Request),
 }
 
 pub struct App {
@@ -281,6 +389,8 @@ pub struct App {
     pub mode: Mode,
     pub input: TextInput,
     pub form: Option<Form>,
+    pub install: Option<InstallForm>,
+    last_install: Option<InstallForm>,
     pub confirm: Option<Confirm>,
     pub help_scroll: u16,
     pub preview_scroll: u16,
@@ -328,6 +438,8 @@ impl App {
             mode: Mode::Normal,
             input: TextInput::default(),
             form: None,
+            install: None,
+            last_install: None,
             confirm: None,
             help_scroll: 0,
             preview_scroll: 0,
@@ -506,6 +618,25 @@ impl App {
         self.input.clear();
     }
 
+    fn open_install_form(&mut self, kind: Kind) {
+        self.install = Some(InstallForm::new(&self.cfg, kind));
+        self.mode = Mode::Install;
+    }
+
+    fn reveal_path(&mut self, path: &Path) {
+        self.select_path(path);
+        let visible = self
+            .current()
+            .map(|asset| paths_equal(&asset.path, path))
+            .unwrap_or(false);
+        if !visible {
+            self.query.clear();
+            self.kind_filter = None;
+            self.recompute();
+            self.select_path(path);
+        }
+    }
+
     pub fn on_key(&mut self, key: KeyEvent) {
         if key.kind == KeyEventKind::Release {
             return;
@@ -519,6 +650,7 @@ impl App {
             Mode::Search => self.on_search(key),
             Mode::Command => self.on_command(key),
             Mode::Form => self.on_form(key),
+            Mode::Install => self.on_install(key),
             Mode::Confirm => self.on_confirm(key),
             Mode::Help => self.on_help(key),
         }
@@ -543,6 +675,17 @@ impl App {
                     _ => {}
                 }
                 self.form = Some(form);
+            }
+            Mode::Install => {
+                let Some(mut form) = self.install.take() else {
+                    return;
+                };
+                match form.focus {
+                    InstallField::Url => form.url.insert_str(&clean),
+                    InstallField::Name => form.name.insert_str(&clean),
+                    _ => {}
+                }
+                self.install = Some(form);
             }
             _ => {}
         }
@@ -653,6 +796,110 @@ impl App {
         self.form = Some(form);
     }
 
+    fn on_install(&mut self, key: KeyEvent) {
+        let Some(mut form) = self.install.take() else {
+            self.mode = Mode::Normal;
+            return;
+        };
+        match key.code {
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+                return;
+            }
+            KeyCode::Enter => {
+                self.install = Some(form);
+                self.submit_install();
+                return;
+            }
+            KeyCode::Tab => form.focus = form.focus.next(),
+            KeyCode::BackTab => form.focus = form.focus.prev(),
+            KeyCode::Left | KeyCode::Up if form.focus.is_choice() => form.cycle(&self.cfg, -1),
+            KeyCode::Right | KeyCode::Down if form.focus.is_choice() => form.cycle(&self.cfg, 1),
+            _ => match form.focus {
+                InstallField::Url => {
+                    edit_input(&mut form.url, &key);
+                }
+                InstallField::Name => {
+                    edit_input(&mut form.name, &key);
+                }
+                _ => {}
+            },
+        }
+        self.install = Some(form);
+    }
+
+    fn submit_install(&mut self) {
+        let Some(mut form) = self.install.take() else {
+            return;
+        };
+        form.error = None;
+        let url = form.url.value.trim().to_string();
+        if url.is_empty() {
+            form.error = Some("repository URL is required".into());
+            form.focus = InstallField::Url;
+            self.install = Some(form);
+            return;
+        }
+        let Some(source) = form.source(&self.cfg).cloned() else {
+            form.error = Some(format!(
+                "No source configured for {}s. Add a [[sources]] entry with kind = \"{}\".",
+                form.kind.plural(),
+                form.kind.as_str()
+            ));
+            form.focus = InstallField::Source;
+            self.install = Some(form);
+            return;
+        };
+        let name = form.name.value.trim();
+        let request = install::Request {
+            url,
+            kind: form.kind,
+            dest: source.resolved(),
+            name: if name.is_empty() {
+                None
+            } else {
+                Some(name.to_string())
+            },
+            reference: None,
+            subdir: None,
+            force: false,
+            trash_dir: None,
+        };
+        self.mode = Mode::Normal;
+        self.last_install = Some(form);
+        self.set_status("Installing from git…", Level::Info);
+        self.effects.push(Effect::Install(request));
+    }
+
+    pub fn after_install(&mut self, outcome: Result<install::Installed, String>) {
+        match outcome {
+            Ok(done) => {
+                self.last_install = None;
+                self.reload(false);
+                self.reveal_path(&done.path);
+                self.set_status(
+                    format!(
+                        "Installed {} `{}` ({} file(s)) → {}",
+                        done.kind.as_str(),
+                        done.name,
+                        done.files,
+                        done.path.display()
+                    ),
+                    Level::Success,
+                );
+            }
+            Err(error) => {
+                self.set_status(format!("Install failed: {error}"), Level::Error);
+                if let Some(mut form) = self.last_install.take() {
+                    form.error = Some(error);
+                    form.focus = InstallField::Url;
+                    self.install = Some(form);
+                    self.mode = Mode::Install;
+                }
+            }
+        }
+    }
+
     fn on_confirm(&mut self, key: KeyEvent) {
         let action = match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => true,
@@ -720,6 +967,10 @@ impl App {
             Action::Create => {
                 let kind = self.kind_filter.unwrap_or(Kind::Skill);
                 self.open_form(kind);
+            }
+            Action::Install => {
+                let kind = self.kind_filter.unwrap_or(Kind::Skill);
+                self.open_install_form(kind);
             }
             Action::Edit => {
                 if let Some(asset) = self.current() {
@@ -870,17 +1121,7 @@ impl App {
                 let kind = form.kind;
                 self.mode = Mode::Normal;
                 self.reload(false);
-                self.select_path(&path);
-                let visible = self
-                    .current()
-                    .map(|asset| paths_equal(&asset.path, &path))
-                    .unwrap_or(false);
-                if !visible {
-                    self.query.clear();
-                    self.kind_filter = None;
-                    self.recompute();
-                    self.select_path(&path);
-                }
+                self.reveal_path(&path);
                 self.set_status(
                     format!("Created {} {}", kind.as_str(), path.display()),
                     Level::Success,
@@ -900,7 +1141,7 @@ impl App {
 
     fn perform_delete(&mut self, path: &Path, label: &str) {
         let result = if self.cfg.behavior.trash {
-            asset::trash_file(path, &self.data_dir).map(Some)
+            asset::trash_path(path, &self.data_dir).map(Some)
         } else {
             fs::remove_file(path)
                 .map(|()| None)
@@ -949,6 +1190,34 @@ impl App {
                     None => self.kind_filter.unwrap_or(Kind::Skill),
                 };
                 self.open_form(kind);
+            }
+            "install" | "clone" => {
+                let mut tokens = line.split_whitespace();
+                tokens.next();
+                let url = tokens.next();
+                let kind_arg = tokens.next();
+                let kind = match kind_arg {
+                    Some(value) => match Kind::parse_loose(value) {
+                        Some(kind) => kind,
+                        None => {
+                            self.set_status(
+                                format!(
+                                    "Unknown kind `{value}` (skill, agent, command, rule, snippet)"
+                                ),
+                                Level::Error,
+                            );
+                            return;
+                        }
+                    },
+                    None => self.kind_filter.unwrap_or(Kind::Skill),
+                };
+                self.open_install_form(kind);
+                if let Some(url) = url
+                    && let Some(form) = self.install.as_mut()
+                {
+                    form.url.set(url);
+                    form.focus = InstallField::Kind;
+                }
             }
             "edit" | "e" => self.run_action(Action::Edit),
             "delete" | "del" | "rm" => self.run_action(Action::Delete),
@@ -1232,6 +1501,55 @@ mod tests {
         assert_eq!(app.mode, Mode::Normal);
         assert!(app.query.is_empty());
         assert_eq!(app.current().unwrap().name, "fresh-skill");
+    }
+
+    #[test]
+    fn install_form_queues_a_git_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_sources(dir.path());
+        app.on_key(key(KeyCode::Char('i')));
+        assert_eq!(app.mode, Mode::Install);
+        type_text(&mut app, "owner/repo");
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.mode, Mode::Normal);
+        match app.take_effect() {
+            Some(Effect::Install(request)) => {
+                assert_eq!(request.url, "owner/repo");
+                assert_eq!(request.kind, Kind::Skill);
+                assert_eq!(request.dest, dir.path().join("skills"));
+            }
+            other => panic!("expected install effect, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn install_command_prefills_url_and_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_sources(dir.path());
+        app.run_command("install https://github.com/owner/repo/tree/main/skills/x agent");
+        assert_eq!(app.mode, Mode::Install);
+        let form = app.install.as_ref().unwrap();
+        assert_eq!(
+            form.url.value,
+            "https://github.com/owner/repo/tree/main/skills/x"
+        );
+        assert_eq!(form.kind, Kind::Agent);
+        assert_eq!(form.source(&app.cfg).unwrap().kind, Kind::Agent);
+    }
+
+    #[test]
+    fn failed_install_reopens_the_form_with_the_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_sources(dir.path());
+        app.on_key(key(KeyCode::Char('i')));
+        type_text(&mut app, "owner/repo");
+        app.on_key(key(KeyCode::Enter));
+        assert!(matches!(app.take_effect(), Some(Effect::Install(_))));
+        app.after_install(Err("clone failed".into()));
+        assert_eq!(app.mode, Mode::Install);
+        let form = app.install.as_ref().unwrap();
+        assert_eq!(form.url.value, "owner/repo");
+        assert_eq!(form.error.as_deref(), Some("clone failed"));
     }
 
     #[test]

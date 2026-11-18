@@ -575,8 +575,39 @@ pub fn template(kind: Kind, slug: &str, description: &str) -> String {
     }
 }
 
-/// Move a file into `data_dir/trash/<timestamp>/<name>` and return the new path.
-pub fn trash_file(path: &Path, data_dir: &Path) -> Result<PathBuf, String> {
+/// Recursively copy `src` into `dst`, preserving file permissions and skipping
+/// `.git` entries. Returns the number of files copied.
+pub fn copy_tree(src: &Path, dst: &Path) -> Result<usize, String> {
+    fs::create_dir_all(dst).map_err(|e| format!("{}: {e}", dst.display()))?;
+    let mut files = 0;
+    let walker = WalkDir::new(src)
+        .min_depth(1)
+        .into_iter()
+        .filter_entry(|entry| entry.file_name() != ".git");
+    for entry in walker {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let relative = entry.path().strip_prefix(src).map_err(|e| e.to_string())?;
+        let target = dst.join(relative);
+        if entry.file_type().is_dir() {
+            fs::create_dir_all(&target).map_err(|e| format!("{}: {e}", target.display()))?;
+        } else if entry.file_type().is_file() {
+            fs::copy(entry.path(), &target).map_err(|e| format!("{}: {e}", target.display()))?;
+            files += 1;
+        } else if entry.file_type().is_symlink() {
+            let metadata = fs::metadata(entry.path()).map_err(|e| e.to_string())?;
+            if metadata.is_file() {
+                fs::copy(entry.path(), &target)
+                    .map_err(|e| format!("{}: {e}", target.display()))?;
+                files += 1;
+            }
+        }
+    }
+    Ok(files)
+}
+
+/// Move a file or directory into `data_dir/trash/<timestamp>/<name>` and return
+/// the new path.
+pub fn trash_path(path: &Path, data_dir: &Path) -> Result<PathBuf, String> {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| format!("{}.{:09}", d.as_secs(), d.subsec_nanos()))
@@ -591,8 +622,13 @@ pub fn trash_file(path: &Path, data_dir: &Path) -> Result<PathBuf, String> {
     match fs::rename(path, &target) {
         Ok(()) => Ok(target),
         Err(_) => {
-            fs::copy(path, &target).map_err(|e| format!("{}: {e}", target.display()))?;
-            fs::remove_file(path).map_err(|e| format!("{}: {e}", path.display()))?;
+            if path.is_dir() {
+                copy_tree(path, &target)?;
+                fs::remove_dir_all(path).map_err(|e| format!("{}: {e}", path.display()))?;
+            } else {
+                fs::copy(path, &target).map_err(|e| format!("{}: {e}", target.display()))?;
+                fs::remove_file(path).map_err(|e| format!("{}: {e}", path.display()))?;
+            }
             Ok(target)
         }
     }
@@ -779,12 +815,30 @@ mod tests {
     }
 
     #[test]
+    fn copy_tree_skips_git_and_counts_files() {
+        let source = tempfile::tempdir().unwrap();
+        fs::create_dir_all(source.path().join("scripts")).unwrap();
+        fs::create_dir_all(source.path().join(".git")).unwrap();
+        fs::write(source.path().join("SKILL.md"), "skill").unwrap();
+        fs::write(source.path().join("scripts/run.sh"), "echo hi").unwrap();
+        fs::write(source.path().join(".git/config"), "ignored").unwrap();
+
+        let dest = tempfile::tempdir().unwrap();
+        let target = dest.path().join("copy");
+        let files = copy_tree(source.path(), &target).unwrap();
+        assert_eq!(files, 2);
+        assert!(target.join("SKILL.md").is_file());
+        assert!(target.join("scripts/run.sh").is_file());
+        assert!(!target.join(".git").exists());
+    }
+
+    #[test]
     fn trash_moves_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("gone.md");
         fs::write(&path, "bye").unwrap();
         let trash = dir.path().join("data");
-        let target = trash_file(&path, &trash).unwrap();
+        let target = trash_path(&path, &trash).unwrap();
         assert!(!path.exists());
         assert!(target.exists());
         assert_eq!(fs::read_to_string(&target).unwrap(), "bye");
