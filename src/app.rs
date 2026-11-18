@@ -1292,6 +1292,7 @@ impl App {
         match outcome {
             Ok(done) => {
                 self.last_install = None;
+                self.mode = Mode::Normal;
                 self.reload(false);
                 self.reveal_path(&done.path);
                 self.set_status(
@@ -2462,6 +2463,25 @@ mod tests {
         let form = app.install.as_ref().unwrap();
         assert_eq!(form.url.value, "owner/repo");
         assert_eq!(form.error.as_deref(), Some("clone failed"));
+    }
+
+    #[test]
+    fn successful_install_closes_the_progress_modal() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill = dir.path().join("skills").join("demo");
+        fs::create_dir_all(&skill).unwrap();
+        let path = skill.join("SKILL.md");
+        fs::write(&path, "---\nname: demo\ndescription: Demo\n---\n").unwrap();
+        let mut app = app_with_sources(dir.path());
+        app.mode = Mode::InstallProgress;
+        app.after_install(Ok(install::Installed {
+            path: path.clone(),
+            kind: Kind::Skill,
+            name: "demo".into(),
+            files: 1,
+        }));
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(app.install_job.is_none());
     }
 
     fn ctrl(code: KeyCode) -> KeyEvent {
