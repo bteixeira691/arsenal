@@ -52,3 +52,22 @@ winget install --id Bteixeira.Arsenal -e
 
 Publisher and package identifier are yours to choose; keep them consistent in
 the render command, the path under `manifests/`, and future releases.
+
+## Manual GitHub Actions flow
+
+The `winget` workflow is manual and never runs on a tag:
+
+1. Open **Actions → winget → Run workflow**.
+2. Enter the release version, package ID, and publisher.
+3. Run with `submit = false`. It downloads the Windows release asset, computes
+   the SHA-256, renders 1.28 manifests, runs `winget validate`, attempts a local
+   install/uninstall, and uploads the manifest set as an artifact.
+4. Add a `WINGET_TOKEN` repository secret using a classic GitHub PAT with `repo`
+   scope.
+5. Run again with `submit = true`. It installs `wingetcreate` and opens the
+   winget-pkgs PR from the rendered manifests.
+6. Complete the Microsoft CLA personally and follow validation labels.
+
+The local install test is intentionally non-blocking: GitHub runners sometimes
+block `LocalManifestFiles`; the winget-pkgs validation pipeline performs the
+authoritative install test.

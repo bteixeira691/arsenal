@@ -1,0 +1,91 @@
+name: winget
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version without the v prefix (for example 0.5.0)"
+        required: true
+      package_id:
+        description: "winget PackageIdentifier"
+        required: true
+        default: Bteixeira.Arsenal
+      publisher:
+        description: "winget Publisher"
+        required: true
+        default: Bteixeira
+      submit:
+        description: "Open a winget-pkgs PR (requires the WINGET_TOKEN secret)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  manifest:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Download the Windows release asset and hash it
+        shell: pwsh
+        run: |
+          $version = "${{ inputs.version }}"
+          $asset = "arsenal-x86_64-pc-windows-msvc.exe"
+          $url = "https://github.com/${{ github.repository }}/releases/download/v$version/$asset"
+          Invoke-WebRequest -Uri $url -OutFile $asset
+          $hash = (Get-FileHash $asset -Algorithm SHA256).Hash.ToLower()
+          "ASSET_SHA256=$hash" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Render manifests
+        shell: bash
+        run: |
+          node packaging/winget/render.mjs \
+            --version "${{ inputs.version }}" \
+            --repo "${{ github.repository }}" \
+            --id "${{ inputs.package_id }}" \
+            --publisher "${{ inputs.publisher }}" \
+            --sha256 "$ASSET_SHA256" \
+            --out "$RUNNER_TEMP/winget"
+
+      - name: Validate manifests
+        shell: pwsh
+        run: |
+          $directory = Join-Path $env:RUNNER_TEMP "winget/${{ inputs.package_id }}/${{ inputs.version }}"
+          winget validate --manifest $directory
+
+      - name: Test local install (non-blocking)
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $directory = Join-Path $env:RUNNER_TEMP "winget/${{ inputs.package_id }}/${{ inputs.version }}"
+          winget settings --enable LocalManifestFiles
+          winget install --manifest $directory --accept-package-agreements --accept-source-agreements --disable-interactivity
+          winget uninstall --id "${{ inputs.package_id }}" --exact --disable-interactivity
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: winget-${{ inputs.version }}
+          path: ${{ runner.temp }}/winget
+          if-no-files-found: error
+
+      - name: Submit pull request
+        if: ${{ inputs.submit }}
+        shell: pwsh
+        env:
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: |
+          if (-not $env:WINGET_TOKEN) {
+            throw "Set the WINGET_TOKEN repository secret to submit a winget PR."
+          }
+          winget install wingetcreate --accept-package-agreements --accept-source-agreements --disable-interactivity
+          $directory = Join-Path $env:RUNNER_TEMP "winget/${{ inputs.package_id }}/${{ inputs.version }}"
+          wingetcreate submit `
+            --prtitle "New package: ${{ inputs.package_id }} version ${{ inputs.version }}" `
+            --token $env:WINGET_TOKEN `
+            $directory
