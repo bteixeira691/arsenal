@@ -4,7 +4,7 @@ use ratatui::prelude::*;
 use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Wrap};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::app::{App, FormField, InstallField, Mode, TextInput};
+use crate::app::{App, FormField, InstallField, Mode, SourceField, TextInput};
 use crate::asset::{format_age, format_size};
 use crate::config::{Level, ResolvedTheme};
 use crate::keys::Action;
@@ -31,6 +31,7 @@ const HELP_GROUPS: &[(&str, &[Action])] = &[
         &[
             Action::Create,
             Action::Install,
+            Action::AddSource,
             Action::Edit,
             Action::EditInline,
             Action::Delete,
@@ -105,6 +106,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     match app.mode {
         Mode::Form => form_modal(f, area, app, &theme),
         Mode::Install => install_modal(f, area, app, &theme),
+        Mode::Source => source_modal(f, area, app, &theme),
         Mode::Confirm => confirm_modal(f, area, app, &theme),
         Mode::Help => help_modal(f, area, app, &theme),
         _ => {}
@@ -454,13 +456,17 @@ fn preview(f: &mut Frame, area: Rect, app: &mut App, theme: &ResolvedTheme) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            format!("{} · {}", asset.kind.as_str(), asset.source),
+            format!("{} · ", asset.kind.as_str()),
             Style::new().fg(theme.muted),
+        ),
+        Span::styled(
+            asset.source.clone(),
+            Style::new().fg(theme.muted).add_modifier(Modifier::BOLD),
         ),
     ]));
     lines.push(Line::from(Span::styled(
         asset.path.display().to_string(),
-        Style::new().fg(theme.muted),
+        Style::new().fg(Color::Reset).add_modifier(Modifier::BOLD),
     )));
     lines.push(Line::from(Span::styled(
         format!(
@@ -521,7 +527,7 @@ fn preview(f: &mut Frame, area: Rect, app: &mut App, theme: &ResolvedTheme) {
         for path in duplicates.iter().take(4) {
             lines.push(Line::from(Span::styled(
                 compact_path(path),
-                Style::new().fg(theme.muted),
+                Style::new().fg(theme.muted).add_modifier(Modifier::BOLD),
             )));
         }
     }
@@ -662,6 +668,12 @@ fn status_bar(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
                 Style::new().fg(theme.muted),
             ));
         }
+        Mode::Source => {
+            spans.push(Span::styled(
+                " tab next · ←/→ kind · enter add · esc cancel",
+                Style::new().fg(theme.muted),
+            ));
+        }
         Mode::Confirm => {
             spans.push(Span::styled(
                 " y delete · n cancel",
@@ -679,6 +691,7 @@ fn status_bar(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
                 ("/", "search"),
                 ("a", "new"),
                 ("i", "install"),
+                ("A", "source"),
                 ("enter", "edit"),
                 ("e", "external"),
                 ("d", "delete"),
@@ -907,6 +920,83 @@ fn install_modal(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
     f.render_widget(Paragraph::new(Text::from(lines)), inner);
 }
 
+fn source_modal(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
+    let Some(form) = &app.source_form else {
+        return;
+    };
+    let width = (area.width.saturating_sub(4)).min(76);
+    let height = 9.min(area.height.saturating_sub(2));
+    let rect = centered(area, width, height);
+    f.render_widget(Clear, rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(theme.accent))
+        .title(Span::styled(
+            " Add source folder ",
+            Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+
+    let label = Style::new().fg(theme.muted);
+    let field_width = inner.width.saturating_sub(10) as usize;
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    let mut path_spans = vec![Span::styled(format!("{:<10}", "path"), label)];
+    if form.focus == SourceField::Path {
+        path_spans.extend(input_spans_clipped(&form.path, theme, field_width));
+    } else if form.path.value.is_empty() {
+        path_spans.push(Span::styled(
+            "~/extra-skills or /absolute/path",
+            Style::new().fg(theme.border),
+        ));
+    } else {
+        path_spans.push(Span::styled(
+            truncate_width(&form.path.value, field_width),
+            Style::new().fg(Color::Reset),
+        ));
+    }
+    lines.push(Line::from(path_spans));
+
+    let mut kind_spans = vec![Span::styled(format!("{:<10}", "kind"), label)];
+    if form.focus == SourceField::Kind {
+        kind_spans.push(Span::styled(
+            format!("‹ {} ›", form.kind.as_str()),
+            Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+        ));
+    } else {
+        kind_spans.push(Span::styled(
+            form.kind.as_str().to_string(),
+            Style::new().fg(Color::Reset),
+        ));
+    }
+    lines.push(Line::from(kind_spans));
+
+    lines.push(Line::from(""));
+    let message = form
+        .error
+        .clone()
+        .unwrap_or_else(|| "enter adds the folder to config.sources.toml and rescans".into());
+    lines.push(Line::from(Span::styled(
+        message,
+        Style::new()
+            .fg(if form.error.is_some() {
+                theme.error
+            } else {
+                theme.muted
+            })
+            .add_modifier(if form.error.is_some() {
+                Modifier::BOLD
+            } else {
+                Modifier::empty()
+            }),
+    )));
+
+    f.render_widget(Paragraph::new(Text::from(lines)), inner);
+}
+
 fn text_field_line(
     name: &str,
     input: &TextInput,
@@ -1116,6 +1206,7 @@ fn help_modal(f: &mut Frame, area: Rect, app: &mut App, theme: &ResolvedTheme) {
     for command in [
         ":new <kind>        create a skill, agent, command, rule, or snippet",
         ":install <url>     clone a skill or asset from GitHub",
+        ":source <path>     add an extra source folder",
         ":filter <kind|all> restrict the list",
         ":sort <mode>       kind | name | modified | path",
         ":theme <preset>    dark | light | mono",

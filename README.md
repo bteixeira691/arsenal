@@ -119,6 +119,26 @@ Missing directories are ignored. Duplicate paths are scanned once. `--root`
 replaces the configured source list entirely, which is handy for a single
 project.
 
+## Adding extra skill folders
+
+Press `A` in the TUI, enter an existing folder, choose the kind (`skill` by
+default), and press `enter`. Arsenal saves the source, rescans, and selects the
+new assets. The same works from the shell:
+
+```sh
+arsenal sources add ~/extra-skills
+arsenal sources add ~/work/agent-assets --kind agent
+arsenal sources list
+arsenal sources list --json
+arsenal sources remove ~/extra-skills
+```
+
+The folder follows the normal layout: for skills it must contain
+`<name>/SKILL.md` children (or flat `*.md` files). Entries added this way live in
+`config.sources.toml` next to the main config, so `config.toml` — including your
+comments — is never rewritten. Relative paths resolve against the directory
+Arsenal runs in.
+
 ## Keymaps
 
 Vim-style sequences are supported (`g g`, not just single keys). Every default
@@ -140,6 +160,7 @@ below is remappable; see [Configuration](#configuration).
 | `T`         | Cycle theme: dark, light, mono            |
 | `a`         | Create an asset                           |
 | `i`         | Install a skill/asset from a GitHub URL   |
+| `A`         | Add an extra source folder                |
 | `enter`     | Edit the selected document in-app         |
 | `e`         | Edit in `$EDITOR` (TUI suspends)          |
 | `d`         | Delete (confirmation, moves to trash)     |
@@ -284,6 +305,7 @@ editor.
 | --------------------- | -------------------------------------------- |
 | `:new <kind>`         | Open the create form (`skill` is the default)|
 | `:install <url>`      | Clone a skill/asset from GitHub              |
+| `:source <path>`      | Add an extra source folder                   |
 | `:inline`             | Edit the selected document in-app            |
 | `:filter <kind\|all>` | Restrict the list                            |
 | `:sort <mode>`        | `kind`, `name`, `modified`, `path`           |
@@ -302,6 +324,9 @@ arsenal [--config PATH] [--root KIND=PATH]... [--query QUERY]
 arsenal list [--json] [--kind KIND] [--sort MODE] [--content]
 arsenal install <URL|owner/repo> [--kind KIND] [--dest PATH] [--name NAME]
                 [--ref REF] [--subdir PATH] [--force]
+arsenal sources list [--json]
+arsenal sources add <PATH> [--kind KIND]
+arsenal sources remove <PATH> [--kind KIND]
 arsenal config path
 arsenal config init [--force]
 arsenal config validate
@@ -324,6 +349,8 @@ Resolution order:
 4. `~/.config/arsenal/config.toml`
 
 The file is created on first use. `arsenal config init --force` rewrites it.
+Folders added with `arsenal sources add` or `A` are kept separately in
+`config.sources.toml` in the same directory; the main file is never rewritten.
 
 ```toml
 [editor]
@@ -475,7 +502,7 @@ packaging/     npm launcher, winget manifests, release notes
 Unit tests cover frontmatter fallbacks, scanning, scaffolding, trash, fuzzy
 filtering, sorting, key sequences, UTF-8 text editing, form validation, delete
 confirmation, inline editing/save/undo, content search, duplicate detection,
-GitHub URL parsing, and install/force/ambiguity cases.
+source overlays, GitHub URL parsing, and install/force/ambiguity cases.
 
 ## License
 

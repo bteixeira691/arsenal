@@ -1,6 +1,6 @@
 {
   "name": "arsenal-tui",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "Terminal UI for cataloging, searching, and editing agent skills, agents, commands, and rules",
   "license": "MIT",
   "type": "commonjs",

@@ -280,6 +280,7 @@ pub enum Action {
     PrevMatch,
     Create,
     Install,
+    AddSource,
     Edit,
     EditInline,
     Delete,
@@ -310,7 +311,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 35] = [
+    pub const ALL: [Action; 36] = [
         Action::Quit,
         Action::Help,
         Action::Command,
@@ -319,6 +320,7 @@ impl Action {
         Action::PrevMatch,
         Action::Create,
         Action::Install,
+        Action::AddSource,
         Action::Edit,
         Action::EditInline,
         Action::Delete,
@@ -358,6 +360,7 @@ impl Action {
             Action::PrevMatch => "prev_match",
             Action::Create => "create",
             Action::Install => "install",
+            Action::AddSource => "add_source",
             Action::Edit => "edit",
             Action::EditInline => "edit_inline",
             Action::Delete => "delete",
@@ -398,6 +401,7 @@ impl Action {
             Action::PrevMatch => "Previous match",
             Action::Create => "Create asset",
             Action::Install => "Install from git",
+            Action::AddSource => "Add source folder",
             Action::Edit => "Edit in $EDITOR",
             Action::EditInline => "Edit document in-app",
             Action::Delete => "Delete (to trash)",
@@ -445,6 +449,7 @@ pub const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     (Action::PrevMatch, "N"),
     (Action::Create, "a"),
     (Action::Install, "i"),
+    (Action::AddSource, "A"),
     (Action::Edit, "e"),
     (Action::EditInline, "enter"),
     (Action::Delete, "d"),

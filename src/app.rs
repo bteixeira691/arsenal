@@ -26,6 +26,7 @@ pub enum Mode {
     Form,
     Install,
     Edit,
+    Source,
     Confirm,
     Help,
 }
@@ -39,6 +40,7 @@ impl Mode {
             Mode::Form => "FORM",
             Mode::Install => "INSTALL",
             Mode::Edit => "EDIT",
+            Mode::Source => "SOURCE",
             Mode::Confirm => "CONFIRM",
             Mode::Help => "HELP",
         }
@@ -381,6 +383,56 @@ impl InstallForm {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SourceField {
+    Path,
+    Kind,
+    Submit,
+}
+
+impl SourceField {
+    fn next(self) -> Self {
+        match self {
+            SourceField::Path => SourceField::Kind,
+            SourceField::Kind => SourceField::Submit,
+            SourceField::Submit => SourceField::Path,
+        }
+    }
+
+    fn prev(self) -> Self {
+        match self {
+            SourceField::Path => SourceField::Submit,
+            SourceField::Kind => SourceField::Path,
+            SourceField::Submit => SourceField::Kind,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct SourceForm {
+    pub path: TextInput,
+    pub kind: Kind,
+    pub focus: SourceField,
+    pub error: Option<String>,
+}
+
+impl SourceForm {
+    pub fn new(kind: Kind) -> Self {
+        SourceForm {
+            path: TextInput::default(),
+            kind,
+            focus: SourceField::Path,
+            error: None,
+        }
+    }
+
+    fn cycle_kind(&mut self, delta: i32) {
+        let next = (self.kind.index() as i32 + delta).rem_euclid(Kind::ALL.len() as i32);
+        self.kind = Kind::ALL[next as usize];
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct DocumentEditor {
     pub path: PathBuf,
     pub label: String,
@@ -424,6 +476,7 @@ pub struct App {
     pub form: Option<Form>,
     pub install: Option<InstallForm>,
     last_install: Option<InstallForm>,
+    pub source_form: Option<SourceForm>,
     pub editor: Option<DocumentEditor>,
     pub discard_prompt: bool,
     pub confirm: Option<Confirm>,
@@ -478,6 +531,7 @@ impl App {
             form: None,
             install: None,
             last_install: None,
+            source_form: None,
             editor: None,
             discard_prompt: false,
             confirm: None,
@@ -699,6 +753,11 @@ impl App {
         self.mode = Mode::Install;
     }
 
+    fn open_source_form(&mut self, kind: Kind) {
+        self.source_form = Some(SourceForm::new(kind));
+        self.mode = Mode::Source;
+    }
+
     fn reveal_path(&mut self, path: &Path) {
         self.select_path(path);
         let visible = self
@@ -731,6 +790,7 @@ impl App {
             Mode::Form => self.on_form(key),
             Mode::Install => self.on_install(key),
             Mode::Edit => self.on_edit(key),
+            Mode::Source => self.on_source(key),
             Mode::Confirm => self.on_confirm(key),
             Mode::Help => self.on_help(key),
         }
@@ -772,6 +832,13 @@ impl App {
                     && editor.textarea.insert_str(&clean)
                 {
                     editor.dirty = true;
+                }
+            }
+            Mode::Source => {
+                if let Some(form) = self.source_form.as_mut()
+                    && form.focus == SourceField::Path
+                {
+                    form.path.insert_str(&clean);
                 }
             }
             _ => {}
@@ -1095,6 +1162,84 @@ impl App {
         self.mode = Mode::Normal;
     }
 
+    fn on_source(&mut self, key: KeyEvent) {
+        let Some(mut form) = self.source_form.take() else {
+            self.mode = Mode::Normal;
+            return;
+        };
+        match key.code {
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+                return;
+            }
+            KeyCode::Enter => {
+                self.source_form = Some(form);
+                self.submit_source();
+                return;
+            }
+            KeyCode::Tab => form.focus = form.focus.next(),
+            KeyCode::BackTab => form.focus = form.focus.prev(),
+            KeyCode::Left | KeyCode::Up if form.focus == SourceField::Kind => {
+                form.cycle_kind(-1);
+            }
+            KeyCode::Right | KeyCode::Down if form.focus == SourceField::Kind => {
+                form.cycle_kind(1);
+            }
+            _ => {
+                if form.focus == SourceField::Path {
+                    edit_input(&mut form.path, &key);
+                }
+            }
+        }
+        self.source_form = Some(form);
+    }
+
+    fn submit_source(&mut self) {
+        let Some(mut form) = self.source_form.take() else {
+            return;
+        };
+        form.error = None;
+        let path = form.path.value.trim().to_string();
+        if path.is_empty() {
+            form.error = Some("folder path is required".into());
+            form.focus = SourceField::Path;
+            self.source_form = Some(form);
+            return;
+        }
+        let source = Source::new(form.kind, &path);
+        if !source.resolved().is_dir() {
+            form.error = Some(format!("not a directory: {}", source.resolved().display()));
+            form.focus = SourceField::Path;
+            self.source_form = Some(form);
+            return;
+        }
+        match config::add_source(&self.config_path, &source) {
+            Ok(true) => {
+                self.cfg.sources.push(source);
+                self.reload(false);
+                self.mode = Mode::Normal;
+                self.set_status(
+                    format!(
+                        "Added {} source {} · {} asset(s) total",
+                        form.kind.as_str(),
+                        path,
+                        self.assets.len()
+                    ),
+                    Level::Success,
+                );
+            }
+            Ok(false) => {
+                self.mode = Mode::Normal;
+                self.set_status(format!("Source already configured: {path}"), Level::Warning);
+            }
+            Err(error) => {
+                form.error = Some(error);
+                form.focus = SourceField::Path;
+                self.source_form = Some(form);
+            }
+        }
+    }
+
     fn on_confirm(&mut self, key: KeyEvent) {
         let action = match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => true,
@@ -1168,6 +1313,10 @@ impl App {
                 self.open_install_form(kind);
             }
             Action::EditInline => self.open_editor(),
+            Action::AddSource => {
+                let kind = self.kind_filter.unwrap_or(Kind::Skill);
+                self.open_source_form(kind);
+            }
             Action::Edit => {
                 if let Some(asset) = self.current() {
                     self.effects.push(Effect::EditAsset {
@@ -1418,6 +1567,34 @@ impl App {
             }
             "edit" | "e" => self.run_action(Action::Edit),
             "inline" | "edit-inline" => self.open_editor(),
+            "source" | "sources" => {
+                let mut tokens = line.split_whitespace();
+                tokens.next();
+                let path = tokens.next();
+                let kind_arg = tokens.next();
+                let kind = match kind_arg {
+                    Some(value) => match Kind::parse_loose(value) {
+                        Some(kind) => kind,
+                        None => {
+                            self.set_status(
+                                format!(
+                                    "Unknown kind `{value}` (skill, agent, command, rule, snippet)"
+                                ),
+                                Level::Error,
+                            );
+                            return;
+                        }
+                    },
+                    None => self.kind_filter.unwrap_or(Kind::Skill),
+                };
+                self.open_source_form(kind);
+                if let Some(path) = path
+                    && let Some(form) = self.source_form.as_mut()
+                {
+                    form.path.set(path);
+                    form.focus = SourceField::Kind;
+                }
+            }
             "delete" | "del" | "rm" => self.run_action(Action::Delete),
             "yank" | "copy" => self.run_action(Action::YankPath),
             "reveal" | "open" => self.run_action(Action::Reveal),
@@ -1533,6 +1710,15 @@ mod tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn create_skill(dir: &Path, name: &str) {
+        fs::create_dir_all(dir).unwrap();
+        fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {name}\n---\n"),
+        )
+        .unwrap();
     }
 
     fn type_text(app: &mut App, text: &str) {
@@ -1904,6 +2090,48 @@ mod tests {
         app.on_key(key(KeyCode::Char('F')));
         assert!(!app.content_search);
         assert!(app.filtered.is_empty());
+    }
+
+    #[test]
+    fn add_source_modal_persists_and_rescans() {
+        let dir = tempfile::tempdir().unwrap();
+        let extra = dir.path().join("extra-skills");
+        create_skill(&extra.join("fresh"), "fresh");
+        let mut app = app_with_sources(dir.path());
+
+        app.on_key(key(KeyCode::Char('A')));
+        assert_eq!(app.mode, Mode::Source);
+        type_text(&mut app, &extra.to_string_lossy());
+        app.on_key(key(KeyCode::Enter));
+
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(
+            app.cfg
+                .sources
+                .iter()
+                .any(|source| source.resolved() == extra && source.kind == Kind::Skill)
+        );
+        assert!(app.assets.iter().any(|asset| asset.name == "fresh"));
+        assert!(config::sources_path(&app.config_path).exists());
+    }
+
+    #[test]
+    fn add_source_modal_rejects_missing_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_sources(dir.path());
+        app.on_key(key(KeyCode::Char('A')));
+        type_text(&mut app, "/definitely/not/here");
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.mode, Mode::Source);
+        assert!(
+            app.source_form
+                .as_ref()
+                .unwrap()
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("not a directory")
+        );
     }
 
     #[test]

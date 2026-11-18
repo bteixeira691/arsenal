@@ -96,6 +96,37 @@ enum Command {
         #[command(subcommand)]
         action: ConfigAction,
     },
+    /// Manage extra source folders (.sources.toml overlay)
+    Sources {
+        #[command(subcommand)]
+        action: SourcesAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum SourcesAction {
+    /// List effective sources
+    List {
+        /// Emit JSON for scripting
+        #[arg(long)]
+        json: bool,
+    },
+    /// Add an existing folder as a source
+    Add {
+        /// Directory to scan
+        path: String,
+        /// Asset kind: skill, agent, command, rule, snippet
+        #[arg(long, value_name = "KIND", default_value = "skill")]
+        kind: String,
+    },
+    /// Remove a source added with `sources add`
+    Remove {
+        /// Directory path used when adding
+        path: String,
+        /// Restrict removal to one kind
+        #[arg(long, value_name = "KIND")]
+        kind: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -124,6 +155,7 @@ fn run(cli: Cli) -> Result<()> {
     let config_path = config::config_path(cli.config.as_deref());
     match cli.command {
         Some(Command::Config { action }) => config_command(&action, &config_path),
+        Some(Command::Sources { action }) => sources_command(&action, &config_path),
         Some(Command::List {
             json,
             kind,
@@ -208,6 +240,86 @@ fn run(cli: Cli) -> Result<()> {
             run_tui(app)
         }
     }
+}
+
+#[derive(Serialize)]
+struct SourceOut {
+    kind: &'static str,
+    path: String,
+    resolved: String,
+    exists: bool,
+}
+
+fn sources_command(action: &SourcesAction, config_path: &Path) -> Result<()> {
+    match action {
+        SourcesAction::List { json } => {
+            let (config, warnings) = load_config(config_path, &[])?;
+            for warning in warnings {
+                eprintln!("warning: {warning}");
+            }
+            let items: Vec<SourceOut> = config
+                .sources
+                .iter()
+                .map(|source| SourceOut {
+                    kind: source.kind.as_str(),
+                    path: source.path.clone(),
+                    resolved: source.resolved().display().to_string(),
+                    exists: source.resolved().is_dir(),
+                })
+                .collect();
+            if *json {
+                println!("{}", serde_json::to_string_pretty(&items)?);
+            } else {
+                println!("{:<8} {:<8} PATH", "KIND", "STATUS");
+                for item in &items {
+                    println!(
+                        "{:<8} {:<8} {}",
+                        item.kind,
+                        if item.exists { "ok" } else { "missing" },
+                        item.path
+                    );
+                }
+            }
+        }
+        SourcesAction::Add { path, kind } => {
+            let kind = Kind::parse_loose(kind).ok_or_else(|| {
+                anyhow::anyhow!("unknown kind `{kind}` (skill, agent, command, rule, snippet)")
+            })?;
+            let path = path.trim();
+            if path.is_empty() {
+                anyhow::bail!("source path is empty");
+            }
+            let source = Source::new(kind, path);
+            if !source.resolved().is_dir() {
+                anyhow::bail!("not a directory: {}", source.resolved().display());
+            }
+            match config::add_source(config_path, &source).map_err(anyhow::Error::msg)? {
+                true => println!(
+                    "added {} source {} (managed in {})",
+                    kind.as_str(),
+                    path,
+                    config::sources_path(config_path).display()
+                ),
+                false => println!("source already configured: {path}"),
+            }
+        }
+        SourcesAction::Remove { path, kind } => {
+            let kind = match kind {
+                Some(value) => Some(Kind::parse_loose(value).ok_or_else(|| {
+                    anyhow::anyhow!("unknown kind `{value}` (skill, agent, command, rule, snippet)")
+                })?),
+                None => None,
+            };
+            let removed =
+                config::remove_source(config_path, path, kind).map_err(anyhow::Error::msg)?;
+            println!(
+                "removed {removed} source entr{} from {}",
+                if removed == 1 { "y" } else { "ies" },
+                config::sources_path(config_path).display()
+            );
+        }
+    }
+    Ok(())
 }
 
 fn config_command(action: &ConfigAction, path: &Path) -> Result<()> {

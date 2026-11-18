@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -509,8 +510,118 @@ pub fn load(path: &Path) -> Result<(Config, Vec<String>)> {
         .with_context(|| format!("reading configuration {}", path.display()))?;
     let mut config: Config = toml::from_str(&text)
         .with_context(|| format!("parsing configuration {}", path.display()))?;
-    let warnings = config.normalize();
+    let mut warnings = Vec::new();
+    match load_overlay(path) {
+        Ok(sources) => config.sources.extend(sources),
+        Err(error) => warnings.push(format!("extra sources: {error}")),
+    }
+    warnings.extend(config.normalize());
     Ok((config, warnings))
+}
+
+/// Additional sources managed by `arsenal sources` and the TUI live next to the
+/// main configuration so user comments in `config.toml` are never rewritten.
+pub fn sources_path(config_path: &Path) -> PathBuf {
+    let stem = config_path
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .filter(|stem| !stem.is_empty())
+        .unwrap_or_else(|| "config".into());
+    config_path.with_file_name(format!("{stem}.sources.toml"))
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+struct SourceOverlay {
+    sources: Vec<Source>,
+}
+
+fn load_overlay(config_path: &Path) -> Result<Vec<Source>, String> {
+    let path = sources_path(config_path);
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(format!("{}: {error}", path.display())),
+    };
+    let overlay: SourceOverlay =
+        toml::from_str(&text).map_err(|error| format!("{}: {error}", path.display()))?;
+    Ok(overlay.sources)
+}
+
+/// Append a source to the managed overlay. Returns `false` when an equivalent
+/// source is already present.
+pub fn add_source(config_path: &Path, source: &Source) -> Result<bool, String> {
+    let mut sources = load_overlay(config_path)?;
+    if sources.iter().any(|existing| same_source(existing, source)) {
+        return Ok(false);
+    }
+    if let Ok(text) = fs::read_to_string(config_path)
+        && let Ok(main) = toml::from_str::<Config>(&text)
+        && main
+            .sources
+            .iter()
+            .any(|existing| same_source(existing, source))
+    {
+        return Ok(false);
+    }
+    sources.push(source.clone());
+    write_overlay(config_path, &sources)?;
+    Ok(true)
+}
+
+/// Remove matching sources from the managed overlay. The main configuration is
+/// never modified.
+pub fn remove_source(config_path: &Path, path: &str, kind: Option<Kind>) -> Result<usize, String> {
+    let mut sources = load_overlay(config_path)?;
+    let before = sources.len();
+    sources.retain(|source| {
+        let kind_matches = kind.is_none_or(|kind| source.kind == kind);
+        let path_matches = source.path == path || source.resolved() == expand_path(path);
+        !(kind_matches && path_matches)
+    });
+    let removed = before - sources.len();
+    if removed == 0 {
+        return Err(format!(
+            "`{path}` is not managed in {}; edit the main config for sources listed there",
+            sources_path(config_path).display()
+        ));
+    }
+    write_overlay(config_path, &sources)?;
+    Ok(removed)
+}
+
+fn same_source(left: &Source, right: &Source) -> bool {
+    if left.kind != right.kind {
+        return false;
+    }
+    if left.path == right.path {
+        return true;
+    }
+    let left_path = fs::canonicalize(left.resolved()).unwrap_or_else(|_| left.resolved());
+    let right_path = fs::canonicalize(right.resolved()).unwrap_or_else(|_| right.resolved());
+    left_path == right_path
+}
+
+fn write_overlay(config_path: &Path, sources: &[Source]) -> Result<(), String> {
+    let path = sources_path(config_path);
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
+    }
+    let body = toml::to_string_pretty(&SourceOverlay {
+        sources: sources.to_vec(),
+    })
+    .map_err(|error| error.to_string())?;
+    fs::write(
+        &path,
+        format!(
+            "# Extra sources managed by `arsenal sources` and the TUI.\n\
+             # The main config is never rewritten; remove entries here or with\n\
+             # `arsenal sources remove <path>`.\n\n{body}"
+        ),
+    )
+    .map_err(|error| format!("{}: {error}", path.display()))
 }
 
 pub const CONFIG_HEADER: &str = "\
@@ -523,6 +634,8 @@ pub const CONFIG_HEADER: &str = "\
 # Sources: each [[sources]] entry points a directory at one asset kind.
 #       Skills are directories containing SKILL.md (or flat *.md files);
 #       other kinds are *.md files, scanned recursively up to `behavior.scan_depth`.
+#       Extra folders added with `arsenal sources add` or the TUI's A key live in
+#       config.sources.toml next to this file; this file is never rewritten by them.
 #
 # Built-in presets: dark, light, mono.
 #
@@ -704,5 +817,58 @@ mod tests {
         assert_eq!(source.path, "./agents");
         assert!(Source::parse_root("nope=./x").is_err());
         assert!(Source::parse_root("./x").is_err());
+    }
+
+    #[test]
+    fn extra_sources_are_managed_separately() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+        let main = "[[sources]]\nkind = \"agent\"\npath = \"/main/agents\"\n";
+        fs::write(&config_path, main).unwrap();
+
+        let extra = dir.path().join("extra-skills");
+        fs::create_dir_all(&extra).unwrap();
+        let source = Source::new(Kind::Skill, extra.to_string_lossy());
+        assert!(add_source(&config_path, &source).unwrap());
+        assert!(!add_source(&config_path, &source).unwrap());
+        assert!(sources_path(&config_path).exists());
+        assert_eq!(fs::read_to_string(&config_path).unwrap(), main);
+
+        let (config, warnings) = load(&config_path).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(
+            config.sources.iter().any(|candidate| {
+                candidate.kind == Kind::Skill && candidate.resolved() == extra
+            })
+        );
+
+        assert_eq!(
+            remove_source(&config_path, &source.path, Some(Kind::Skill)).unwrap(),
+            1
+        );
+        let (config, _) = load(&config_path).unwrap();
+        assert!(
+            !config
+                .sources
+                .iter()
+                .any(|candidate| candidate.resolved() == extra)
+        );
+    }
+
+    #[test]
+    fn malformed_extra_sources_warn_without_failing() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+        fs::write(&config_path, "[behavior]\nscan_depth = 2\n").unwrap();
+        fs::write(sources_path(&config_path), "sources = [\n").unwrap();
+
+        let (config, warnings) = load(&config_path).unwrap();
+        assert_eq!(config.behavior.scan_depth, 2);
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("extra sources")),
+            "{warnings:?}"
+        );
     }
 }
