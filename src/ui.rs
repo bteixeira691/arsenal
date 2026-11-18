@@ -31,6 +31,7 @@ const HELP_GROUPS: &[(&str, &[Action])] = &[
             Action::Create,
             Action::Install,
             Action::Edit,
+            Action::EditInline,
             Action::Delete,
             Action::YankPath,
             Action::Reveal,
@@ -74,15 +75,19 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     let chunks = Layout::vertical([
         Constraint::Length(1),
+        Constraint::Length(1),
         Constraint::Min(3),
         Constraint::Length(1),
     ])
     .split(area);
 
     header(f, chunks[0], app, &theme);
+    search_bar(f, chunks[1], app, &theme);
 
-    let body = chunks[1];
-    if app.show_preview && body.width >= 60 {
+    let body = chunks[2];
+    if app.mode == Mode::Edit {
+        editor_view(f, body, app, &theme);
+    } else if app.show_preview && body.width >= 60 {
         let list_width = app.cfg.layout.list_width.clamp(20, 70).min(80);
         let [list_area, preview_area] =
             Layout::horizontal([Constraint::Percentage(list_width), Constraint::Fill(1)])
@@ -93,7 +98,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         asset_list(f, body, app, &theme);
     }
 
-    status_bar(f, chunks[2], app, &theme);
+    status_bar(f, chunks[3], app, &theme);
 
     match app.mode {
         Mode::Form => form_modal(f, area, app, &theme),
@@ -102,6 +107,132 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Mode::Help => help_modal(f, area, app, &theme),
         _ => {}
     }
+    if app.mode == Mode::Edit && app.discard_prompt {
+        discard_modal(f, area, &theme);
+    }
+}
+
+fn search_bar(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
+    let right_text = match app.mode {
+        Mode::Search => "enter keep · esc clear".to_string(),
+        Mode::Edit => "ctrl-s save · esc exit".to_string(),
+        _ => format!("sort {}", app.sort.label()),
+    };
+    let right_width = (right_text.width() as u16 + 1).min(area.width / 2);
+    let [left_area, right_area] =
+        Layout::horizontal([Constraint::Min(10), Constraint::Length(right_width)]).areas(area);
+
+    let mut spans = vec![Span::styled(
+        " / ",
+        Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+    )];
+    if app.mode == Mode::Search {
+        let budget = left_area.width.saturating_sub(3) as usize;
+        spans.extend(input_spans_clipped(&app.input, theme, budget));
+    } else if app.query.is_empty() {
+        spans.push(Span::styled(
+            "search assets  ( / to focus )",
+            Style::new().fg(theme.border),
+        ));
+    } else {
+        spans.push(Span::styled(
+            app.query.clone(),
+            Style::new().fg(Color::Reset),
+        ));
+    }
+    f.render_widget(Paragraph::new(Line::from(spans)), left_area);
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            right_text,
+            Style::new().fg(theme.muted),
+        )))
+        .alignment(Alignment::Right),
+        right_area,
+    );
+}
+
+fn editor_view(f: &mut Frame, area: Rect, app: &mut App, theme: &ResolvedTheme) {
+    let Some(editor) = app.editor.as_mut() else {
+        return;
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(if editor.dirty {
+            theme.warning
+        } else {
+            theme.accent
+        }))
+        .title(Line::from(vec![
+            Span::styled(
+                " Editing ",
+                Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("· ", Style::new().fg(theme.border)),
+            Span::styled(
+                editor.label.clone(),
+                Style::new().fg(Color::Reset).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                if editor.dirty { "  ●" } else { "" },
+                Style::new().fg(theme.warning).add_modifier(Modifier::BOLD),
+            ),
+        ]))
+        .title_bottom(Line::from(Span::styled(
+            format!(" {} ", compact_path(&editor.path)),
+            Style::new().fg(theme.muted),
+        )));
+    editor.textarea.set_block(block);
+    editor.textarea.set_style(Style::new().fg(Color::Reset));
+    editor
+        .textarea
+        .set_line_number_style(Style::new().fg(theme.border));
+    editor.textarea.set_cursor_style(
+        Style::new()
+            .fg(theme.accent)
+            .add_modifier(Modifier::REVERSED),
+    );
+    editor
+        .textarea
+        .set_cursor_line_style(Style::new().add_modifier(Modifier::DIM));
+    f.render_widget(&editor.textarea, area);
+}
+
+fn discard_modal(f: &mut Frame, area: Rect, theme: &ResolvedTheme) {
+    let width = (area.width.saturating_sub(4)).min(58);
+    let height = 7.min(area.height.saturating_sub(2));
+    let rect = centered(area, width, height);
+    f.render_widget(Clear, rect);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(theme.warning))
+        .title(Span::styled(
+            " Unsaved changes ",
+            Style::new().fg(theme.warning).add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+    let lines = vec![
+        Line::from(Span::styled(
+            "Discard edits to this document?",
+            Style::new().fg(Color::Reset).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                " y ",
+                Style::new().fg(theme.error).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("discard", Style::new().fg(theme.muted)),
+            Span::styled(
+                "    n ",
+                Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("keep editing", Style::new().fg(theme.muted)),
+        ]),
+    ];
+    f.render_widget(Paragraph::new(Text::from(lines)), inner);
 }
 
 fn header(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
@@ -444,15 +575,26 @@ fn status_bar(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
     let mut spans = vec![Span::styled(format!(" {} ", app.mode.label()), chip_style)];
 
     match app.mode {
-        Mode::Search | Mode::Command => {
-            let prefix = if app.mode == Mode::Search { "/" } else { ":" };
+        Mode::Command => {
             spans.push(Span::styled(
-                format!(" {prefix}"),
+                " :",
                 Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
             ));
             spans.extend(input_spans(&app.input, theme));
             spans.push(Span::styled(
                 format!("   {}/{}", app.filtered.len(), app.assets.len()),
+                Style::new().fg(theme.muted),
+            ));
+        }
+        Mode::Search => {
+            spans.push(Span::styled(
+                " type to filter · enter keep · esc clear",
+                Style::new().fg(theme.muted),
+            ));
+        }
+        Mode::Edit => {
+            spans.push(Span::styled(
+                " ctrl-s save · esc exit · ctrl-z undo · ctrl-r redo",
                 Style::new().fg(theme.muted),
             ));
         }
@@ -485,7 +627,8 @@ fn status_bar(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
                 ("/", "search"),
                 ("a", "new"),
                 ("i", "install"),
-                ("e", "edit"),
+                ("enter", "edit"),
+                ("e", "external"),
                 ("d", "delete"),
                 ("?", "help"),
             ] {
@@ -907,6 +1050,7 @@ fn help_modal(f: &mut Frame, area: Rect, app: &mut App, theme: &ResolvedTheme) {
         ":sort <mode>       kind | name | modified | path",
         ":theme <preset>    dark | light | mono",
         ":edit  :delete  :yank  :reveal  :rescan  :config  :warnings  :quit",
+        ":inline            edit the selected document in-app",
     ] {
         lines.push(Line::from(Span::styled(
             format!("   {command}"),

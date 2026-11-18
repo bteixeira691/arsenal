@@ -1,11 +1,13 @@
 //! Application state, modal editors, and the event-to-action layer.
 
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use fuzzy_matcher::skim::SkimMatcherV2;
+use ratatui_textarea::TextArea;
 
 use crate::asset::{self, Asset, CreateError, Kind};
 use crate::config::{self, Config, Level, Source};
@@ -22,6 +24,7 @@ pub enum Mode {
     Command,
     Form,
     Install,
+    Edit,
     Confirm,
     Help,
 }
@@ -34,6 +37,7 @@ impl Mode {
             Mode::Command => "COMMAND",
             Mode::Form => "FORM",
             Mode::Install => "INSTALL",
+            Mode::Edit => "EDIT",
             Mode::Confirm => "CONFIRM",
             Mode::Help => "HELP",
         }
@@ -117,6 +121,26 @@ fn paths_equal(a: &Path, b: &Path) -> bool {
         (Ok(left), Ok(right)) => left == right,
         _ => false,
     }
+}
+
+fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+    temp.write_all(contents.as_bytes())?;
+    temp.flush()?;
+    temp.as_file().sync_all()?;
+    if let Ok(metadata) = fs::metadata(path) {
+        temp.as_file().set_permissions(metadata.permissions())?;
+    }
+    #[cfg(windows)]
+    if path.exists() {
+        fs::remove_file(path)?;
+    }
+    temp.persist(path).map_err(|error| error.error)?;
+    Ok(())
 }
 
 fn char_to_byte(text: &str, char_index: usize) -> usize {
@@ -356,6 +380,13 @@ impl InstallForm {
     }
 }
 
+pub struct DocumentEditor {
+    pub path: PathBuf,
+    pub label: String,
+    pub textarea: TextArea<'static>,
+    pub dirty: bool,
+}
+
 #[derive(Clone, Debug)]
 pub struct Confirm {
     pub path: PathBuf,
@@ -391,6 +422,8 @@ pub struct App {
     pub form: Option<Form>,
     pub install: Option<InstallForm>,
     last_install: Option<InstallForm>,
+    pub editor: Option<DocumentEditor>,
+    pub discard_prompt: bool,
     pub confirm: Option<Confirm>,
     pub help_scroll: u16,
     pub preview_scroll: u16,
@@ -440,6 +473,8 @@ impl App {
             form: None,
             install: None,
             last_install: None,
+            editor: None,
+            discard_prompt: false,
             confirm: None,
             help_scroll: 0,
             preview_scroll: 0,
@@ -641,7 +676,10 @@ impl App {
         if key.kind == KeyEventKind::Release {
             return;
         }
-        if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c')) {
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Char('c'))
+            && self.mode != Mode::Edit
+        {
             self.quit = true;
             return;
         }
@@ -651,6 +689,7 @@ impl App {
             Mode::Command => self.on_command(key),
             Mode::Form => self.on_form(key),
             Mode::Install => self.on_install(key),
+            Mode::Edit => self.on_edit(key),
             Mode::Confirm => self.on_confirm(key),
             Mode::Help => self.on_help(key),
         }
@@ -686,6 +725,13 @@ impl App {
                     _ => {}
                 }
                 self.install = Some(form);
+            }
+            Mode::Edit => {
+                if let Some(editor) = self.editor.as_mut()
+                    && editor.textarea.insert_str(&clean)
+                {
+                    editor.dirty = true;
+                }
             }
             _ => {}
         }
@@ -900,6 +946,98 @@ impl App {
         }
     }
 
+    fn on_edit(&mut self, key: KeyEvent) {
+        if self.discard_prompt {
+            match key.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') => self.close_editor(),
+                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                    self.discard_prompt = false;
+                }
+                _ => {}
+            }
+            return;
+        }
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        if ctrl && key.code == KeyCode::Char('s') {
+            self.save_editor();
+            return;
+        }
+        if key.code == KeyCode::Esc {
+            if self.editor.as_ref().is_some_and(|editor| editor.dirty) {
+                self.discard_prompt = true;
+            } else {
+                self.close_editor();
+            }
+            return;
+        }
+        let Some(editor) = self.editor.as_mut() else {
+            self.mode = Mode::Normal;
+            return;
+        };
+        let modified = if ctrl && key.code == KeyCode::Char('z') {
+            editor.textarea.undo()
+        } else if ctrl && key.code == KeyCode::Char('r') {
+            editor.textarea.redo()
+        } else {
+            editor.textarea.input(key)
+        };
+        if modified {
+            editor.dirty = true;
+        }
+    }
+
+    fn open_editor(&mut self) {
+        let Some(asset) = self.current() else {
+            return;
+        };
+        let path = asset.path.clone();
+        let label = asset.name.clone();
+        match fs::read_to_string(&path) {
+            Ok(text) => {
+                let lines: Vec<String> = text.split('\n').map(str::to_string).collect();
+                let mut textarea = TextArea::new(lines);
+                textarea.set_tab_length(4);
+                textarea.set_hard_tab_indent(false);
+                self.editor = Some(DocumentEditor {
+                    path,
+                    label,
+                    textarea,
+                    dirty: false,
+                });
+                self.discard_prompt = false;
+                self.mode = Mode::Edit;
+            }
+            Err(error) => self.set_status(
+                format!("Cannot edit {}: {error}", path.display()),
+                Level::Error,
+            ),
+        }
+    }
+
+    fn save_editor(&mut self) {
+        let Some(editor) = self.editor.as_ref() else {
+            return;
+        };
+        let path = editor.path.clone();
+        let text = editor.textarea.lines().join("\n");
+        match write_atomic(&path, &text) {
+            Ok(()) => {
+                if let Some(editor) = self.editor.as_mut() {
+                    editor.dirty = false;
+                }
+                self.reload(true);
+                self.set_status(format!("Saved {}", path.display()), Level::Success);
+            }
+            Err(error) => self.set_status(format!("Save failed: {error}"), Level::Error),
+        }
+    }
+
+    fn close_editor(&mut self) {
+        self.editor = None;
+        self.discard_prompt = false;
+        self.mode = Mode::Normal;
+    }
+
     fn on_confirm(&mut self, key: KeyEvent) {
         let action = match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => true,
@@ -972,6 +1110,7 @@ impl App {
                 let kind = self.kind_filter.unwrap_or(Kind::Skill);
                 self.open_install_form(kind);
             }
+            Action::EditInline => self.open_editor(),
             Action::Edit => {
                 if let Some(asset) = self.current() {
                     self.effects.push(Effect::EditAsset {
@@ -1220,6 +1359,7 @@ impl App {
                 }
             }
             "edit" | "e" => self.run_action(Action::Edit),
+            "inline" | "edit-inline" => self.open_editor(),
             "delete" | "del" | "rm" => self.run_action(Action::Delete),
             "yank" | "copy" => self.run_action(Action::YankPath),
             "reveal" | "open" => self.run_action(Action::Reveal),
@@ -1550,6 +1690,89 @@ mod tests {
         let form = app.install.as_ref().unwrap();
         assert_eq!(form.url.value, "owner/repo");
         assert_eq!(form.error.as_deref(), Some("clone failed"));
+    }
+
+    fn ctrl(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::CONTROL)
+    }
+
+    #[test]
+    fn inline_editor_saves_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill = dir.path().join("skills").join("demo");
+        fs::create_dir_all(&skill).unwrap();
+        let path = skill.join("SKILL.md");
+        fs::write(
+            &path,
+            "---\nname: demo\ndescription: Demo skill\n---\n\n# Demo\n",
+        )
+        .unwrap();
+        let mut app = app_with_sources(dir.path());
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.mode, Mode::Edit);
+        assert!(app.editor.is_some());
+
+        app.on_key(key(KeyCode::Char('X')));
+        assert!(app.editor.as_ref().unwrap().dirty);
+        app.on_key(ctrl(KeyCode::Char('s')));
+        assert!(!app.editor.as_ref().unwrap().dirty);
+        let saved = fs::read_to_string(&path).unwrap();
+        assert!(saved.starts_with('X'), "{saved:?}");
+        assert!(saved.ends_with('\n'));
+
+        app.on_key(key(KeyCode::Esc));
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(app.editor.is_none());
+        assert_eq!(app.current().unwrap().name, "demo");
+    }
+
+    #[test]
+    fn inline_editor_discard_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill = dir.path().join("skills").join("demo");
+        fs::create_dir_all(&skill).unwrap();
+        let path = skill.join("SKILL.md");
+        let original = "---\nname: demo\ndescription: Demo\n---\n";
+        fs::write(&path, original).unwrap();
+
+        let mut app = app_with_sources(dir.path());
+        app.on_key(key(KeyCode::Enter));
+        app.on_key(key(KeyCode::Char('Y')));
+        app.on_key(key(KeyCode::Esc));
+        assert_eq!(app.mode, Mode::Edit);
+        assert!(app.discard_prompt);
+
+        app.on_key(key(KeyCode::Char('n')));
+        assert!(!app.discard_prompt);
+        assert_eq!(app.mode, Mode::Edit);
+
+        app.on_key(key(KeyCode::Esc));
+        assert!(app.discard_prompt);
+        app.on_key(key(KeyCode::Char('y')));
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(app.editor.is_none());
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn inline_editor_undo_and_redo() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill = dir.path().join("skills").join("demo");
+        fs::create_dir_all(&skill).unwrap();
+        let path = skill.join("SKILL.md");
+        let original = "---\nname: demo\ndescription: Demo\n---\n";
+        fs::write(&path, original).unwrap();
+
+        let mut app = app_with_sources(dir.path());
+        app.on_key(key(KeyCode::Enter));
+        app.on_key(key(KeyCode::Char('X')));
+        app.on_key(ctrl(KeyCode::Char('z')));
+        app.on_key(ctrl(KeyCode::Char('s')));
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+
+        app.on_key(ctrl(KeyCode::Char('r')));
+        app.on_key(ctrl(KeyCode::Char('s')));
+        assert!(fs::read_to_string(&path).unwrap().starts_with('X'));
     }
 
     #[test]

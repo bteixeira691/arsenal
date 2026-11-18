@@ -281,6 +281,7 @@ pub enum Action {
     Create,
     Install,
     Edit,
+    EditInline,
     Delete,
     YankPath,
     Reveal,
@@ -308,7 +309,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 33] = [
+    pub const ALL: [Action; 34] = [
         Action::Quit,
         Action::Help,
         Action::Command,
@@ -318,6 +319,7 @@ impl Action {
         Action::Create,
         Action::Install,
         Action::Edit,
+        Action::EditInline,
         Action::Delete,
         Action::YankPath,
         Action::Reveal,
@@ -355,6 +357,7 @@ impl Action {
             Action::Create => "create",
             Action::Install => "install",
             Action::Edit => "edit",
+            Action::EditInline => "edit_inline",
             Action::Delete => "delete",
             Action::YankPath => "yank_path",
             Action::Reveal => "reveal",
@@ -393,6 +396,7 @@ impl Action {
             Action::Create => "Create asset",
             Action::Install => "Install from git",
             Action::Edit => "Edit in $EDITOR",
+            Action::EditInline => "Edit document in-app",
             Action::Delete => "Delete (to trash)",
             Action::YankPath => "Copy path (OSC 52)",
             Action::Reveal => "Reveal in file manager",
@@ -438,6 +442,7 @@ pub const DEFAULT_BINDINGS: &[(Action, &str)] = &[
     (Action::Create, "a"),
     (Action::Install, "i"),
     (Action::Edit, "e"),
+    (Action::EditInline, "enter"),
     (Action::Delete, "d"),
     (Action::YankPath, "y"),
     (Action::Reveal, "o"),

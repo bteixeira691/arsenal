@@ -11,6 +11,7 @@ content.
 
 ```text
  ARSENAL · agents  ~/.config/arsenal/config.toml                       2/7 assets
+ / audit                                                            sort kind
 ╭ Assets 2 ──────────────────────────────╮╭ Preview · security-auditor ──────────────╮
 │ A reviewer  Reviews diffs for …        ││security-auditor                          │
 │ A security-auditor  Audits repositor…  ││A agent · ~/.claude/agents                │
@@ -19,7 +20,7 @@ content.
 │                                        ││                                          │
 │                                        ││Audit the repository and report …         │
 ╰────────────────────────────────────────╯╰──────────────────────────────────────────╯
- NORMAL   / search  a new  e edit  d delete  ? help
+ NORMAL   / search  a new  i install  enter edit  e external  d delete  ? help
 ```
 
 ## Install
@@ -98,7 +99,7 @@ below is remappable; see [Configuration](#configuration).
 | `ctrl-d` / `ctrl-u` | Half page down / up                |
 | `ctrl-f` / `ctrl-b` | Page down / up                     |
 | `J` / `K`   | Scroll preview down / up                  |
-| `/`         | Incremental fuzzy search (`enter` keeps, `esc` cancels) |
+| `/`         | Focus the always-visible search bar; `enter` keeps, `esc` reverts |
 | `n` / `N`   | Next / previous result (wraps)            |
 | `0`–`5`     | All kinds, skills, agents, commands, rules, snippets |
 | `s`         | Cycle sort: kind, name, modified, path    |
@@ -106,6 +107,7 @@ below is remappable; see [Configuration](#configuration).
 | `T`         | Cycle theme: dark, light, mono            |
 | `a`         | Create an asset                           |
 | `i`         | Install a skill/asset from a GitHub URL   |
+| `enter`     | Edit the selected document in-app         |
 | `e`         | Edit in `$EDITOR` (TUI suspends)          |
 | `d`         | Delete (confirmation, moves to trash)     |
 | `y`         | Copy the path with OSC 52                 |
@@ -116,13 +118,17 @@ below is remappable; see [Configuration](#configuration).
 | `?`         | Keymap and command help                   |
 | `q`         | Quit                                      |
 
-`ctrl-c` always quits. `esc` clears the pending key sequence or the active
-search. Modals capture keys, so `a`, `d`, and friends are literal text there.
+`ctrl-c` quits outside the inline editor; inside the editor it is copy.
+`esc` clears the pending key sequence or the active search. Modals capture keys,
+so `a`, `d`, and friends are literal text there.
 
 ### Search
 
-Terms are ANDed and fuzzy-matched against name, kind, tags, and description.
-A term prefixed with `#` filters tags by substring:
+The search bar sits under the header and always shows the active query. Press
+`/` to focus it and type; the list and counts update live. `enter` leaves the
+bar with the query applied, `esc` restores the previous query. Terms are ANDed
+and fuzzy-matched against name, kind, tags, and description. A term prefixed
+with `#` filters tags by substring:
 
 ```text
 /railway
@@ -203,12 +209,33 @@ Behavior:
   overwritten.
 - Each kind gets a frontmatter-complete scaffold with a purpose-specific body.
 
+## Editing documents
+
+`enter` opens the selected Markdown file — frontmatter and body — in a
+full-pane editor with line numbers. The pane title shows `●` while the buffer
+has unsaved changes.
+
+| Key | Action |
+| --- | --- |
+| `ctrl-s` | Save atomically, then rescan and refresh the preview |
+| `esc` | Exit; if the buffer is dirty, asks before discarding |
+| `ctrl-z` / `ctrl-r` | Undo / redo |
+| arrows, `home` / `end`, `pageup` / `pagedown` | Navigate |
+| `tab` | Insert a tab (4 columns) |
+
+Saves write to a temporary file in the same directory, preserve the original
+permissions, and atomically replace the document. The list, search index, and
+preview reload in place, so a renamed frontmatter `name` takes effect
+immediately. `e` still opens the file in `$EDITOR` when you want your own
+editor.
+
 ## Command palette
 
 | Command               | Effect                                       |
 | --------------------- | -------------------------------------------- |
 | `:new <kind>`         | Open the create form (`skill` is the default)|
 | `:install <url>`      | Clone a skill/asset from GitHub              |
+| `:inline`             | Edit the selected document in-app            |
 | `:filter <kind\|all>` | Restrict the list                            |
 | `:sort <mode>`        | `kind`, `name`, `modified`, `path`           |
 | `:theme <preset>`     | `dark`, `light`, `mono`                      |
@@ -361,7 +388,10 @@ statusline still reports that the sequence was sent.
 - Markdown and `SKILL.md` layouts are the source of truth; there is no database.
 - Installs clone to a temporary directory and copy only the chosen asset; the
   clone is always deleted. No install scripts run.
-- No file watcher: `R` rescans explicitly, and every editor round-trip rescans.
+- No file watcher: `R` rescans explicitly; saving or closing the inline editor
+  also refreshes the list and preview.
+- The inline editor writes atomically (temp file + rename) and preserves file
+  permissions; unsaved buffers require confirmation before closing.
 - No mouse capture, so the terminal's native selection and copy keep working.
 - Previews are capped at 4,000 body lines; very large files stay responsive.
 - Scan warnings are bounded and never abort a session.
@@ -391,7 +421,8 @@ src/install.rs git cloning, URL parsing, asset resolution
 
 Unit tests cover frontmatter fallbacks, scanning, scaffolding, trash, fuzzy
 filtering, sorting, key sequences, UTF-8 text editing, form validation, delete
-confirmation, GitHub URL parsing, and install/force/ambiguity cases.
+confirmation, inline editing/save/undo, GitHub URL parsing, and
+install/force/ambiguity cases.
 
 ## License
 
