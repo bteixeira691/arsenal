@@ -94,7 +94,7 @@ enum Command {
         force: bool,
     },
     /// Remove an installed asset (moves it to trash by default)
-    Uninstall {
+    Remove {
         /// Asset name or path; omit to choose interactively
         asset: Option<String>,
         /// Restrict removal to one kind
@@ -104,6 +104,8 @@ enum Command {
         #[arg(long)]
         purge: bool,
     },
+    /// Uninstall Arsenal itself
+    Uninstall,
     /// List supported agent-tool integration roots
     Integrations {
         /// Emit JSON (one object per root) for scripting
@@ -252,7 +254,7 @@ fn run(cli: Cli) -> Result<()> {
             );
             Ok(())
         }
-        Some(Command::Uninstall { asset, kind, purge }) => {
+        Some(Command::Remove { asset, kind, purge }) => {
             let (cfg, warnings) = load_config(&config_path, &cli.roots)?;
             for warning in warnings {
                 eprintln!("warning: {warning}");
@@ -263,8 +265,9 @@ fn run(cli: Cli) -> Result<()> {
                 })?),
                 None => None,
             };
-            uninstall_asset(&cfg, asset.as_deref(), kind, purge)
+            remove_asset(&cfg, asset.as_deref(), kind, purge)
         }
+        Some(Command::Uninstall) => uninstall_self(),
         None => {
             let (cfg, warnings) = load_config(&config_path, &cli.roots)?;
             let app = App::new(cfg, config_path, warnings, cli.query.unwrap_or_default());
@@ -327,6 +330,77 @@ fn compact_home(path: &Path) -> String {
     }
 }
 
+fn uninstall_self() -> Result<()> {
+    let exe = std::env::current_exe().context("resolving the Arsenal executable")?;
+    let normalized = exe.to_string_lossy().replace('\\', "/");
+    if normalized.contains("/target/debug/") || normalized.contains("/target/release/") {
+        anyhow::bail!(
+            "refusing to remove development build {}; use cargo clean or delete it manually",
+            exe.display()
+        );
+    }
+
+    let from_launcher =
+        std::env::var_os("ARSENAL_LAUNCHER").is_some() || normalized.contains("/arsenal/bin/");
+    if from_launcher {
+        let mut package_removed = false;
+        for (program, args) in [
+            ("npm", ["uninstall", "-g", "arsenal-tui"]),
+            ("bun", ["remove", "-g", "arsenal-tui"]),
+        ] {
+            match std::process::Command::new(program).args(args).status() {
+                Ok(status) if status.success() => {
+                    package_removed = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        if !package_removed {
+            eprintln!(
+                "warning: could not remove the arsenal-tui package; remove it with your package manager"
+            );
+        }
+        if let Some(cache) = arsenal_cache_root()
+            && cache.exists()
+        {
+            fs::remove_dir_all(&cache)
+                .with_context(|| format!("removing cache {}", cache.display()))?;
+        }
+    }
+
+    match fs::remove_file(&exe) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error).with_context(|| format!("removing {}", exe.display()));
+        }
+    }
+    println!("uninstalled Arsenal from {}", exe.display());
+    println!("configuration and managed assets were left in place.");
+    Ok(())
+}
+
+fn arsenal_cache_root() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("ARSENAL_CACHE_DIR") {
+        return Some(PathBuf::from(path));
+    }
+    if cfg!(target_os = "macos") {
+        return Some(config::home_dir().join("Library/Caches/arsenal/bin"));
+    }
+    if cfg!(target_os = "windows") {
+        return std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .map(|path| path.join("arsenal/bin"));
+    }
+    Some(
+        std::env::var_os("XDG_CACHE_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| config::home_dir().join(".cache"))
+            .join("arsenal/bin"),
+    )
+}
+
 fn canonical_or(path: &Path) -> PathBuf {
     fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
@@ -345,12 +419,7 @@ fn removal_target(asset: &Asset) -> PathBuf {
     asset.path.clone()
 }
 
-fn uninstall_asset(
-    cfg: &Config,
-    query: Option<&str>,
-    kind: Option<Kind>,
-    purge: bool,
-) -> Result<()> {
+fn remove_asset(cfg: &Config, query: Option<&str>, kind: Option<Kind>, purge: bool) -> Result<()> {
     let report = asset::scan(&cfg.sources, &cfg.behavior);
     for warning in &report.warnings {
         eprintln!("warning: {warning}");
@@ -431,7 +500,7 @@ fn uninstall_asset(
             );
         }
         print!(
-            "Uninstall which asset? [1-{}] (empty cancels): ",
+            "Remove which asset? [1-{}] (empty cancels): ",
             candidates.len()
         );
         io::stdout().flush().context("writing prompt")?;
@@ -452,10 +521,10 @@ fn uninstall_asset(
             .ok_or_else(|| anyhow::anyhow!("selection {index} is out of range"))?
     };
 
-    uninstall_selected(cfg, selected, purge)
+    remove_selected(cfg, selected, purge)
 }
 
-fn uninstall_selected(cfg: &Config, asset: &Asset, purge: bool) -> Result<()> {
+fn remove_selected(cfg: &Config, asset: &Asset, purge: bool) -> Result<()> {
     let target = removal_target(asset);
     let trashed = if purge || !cfg.behavior.trash {
         if target.is_dir() {

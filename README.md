@@ -371,7 +371,8 @@ arsenal [--config PATH] [--root KIND=PATH]... [--query QUERY]
 arsenal list [--json] [--kind KIND] [--sort MODE] [--content]
 arsenal install <URL|owner/repo> [--kind KIND] [--dest PATH] [--name NAME]
                 [--ref REF] [--subdir PATH] [--force]
-arsenal uninstall [NAME|PATH] [--kind KIND] [--purge]
+arsenal remove [NAME|PATH] [--kind KIND] [--purge]
+arsenal uninstall
 arsenal sources list [--json]
 arsenal sources add <PATH> [--kind KIND]
 arsenal sources remove <PATH> [--kind KIND]
@@ -386,7 +387,11 @@ arsenal config validate
 `--json` emits one object per asset with `kind`, `name`, `description`, `tags`,
 `path`, `source`, and `modified` (Unix seconds). Scan warnings go to stderr.
 
-`uninstall` without an argument lists installed assets and asks which one to
+`uninstall` removes Arsenal itself: the binary, the launcher cache, and the
+global `arsenal-tui` package when started through the npm/Bun launcher. The
+configuration and managed assets are left in place.
+
+`remove` without an argument lists installed assets and asks which one to
 remove. You can also pass an exact asset name or path, filter by `--kind` when
 names collide, and move the skill directory or single file to the Arsenal trash.
 Pass `--purge` to delete permanently. It refuses ambiguous matches and paths

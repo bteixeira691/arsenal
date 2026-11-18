@@ -107,7 +107,10 @@ async function ensureBinary() {
 
 (async () => {
   const binary = await ensureBinary();
-  const result = spawnSync(binary, process.argv.slice(2), { stdio: "inherit" });
+  const result = spawnSync(binary, process.argv.slice(2), {
+    stdio: "inherit",
+    env: { ...process.env, ARSENAL_LAUNCHER: "1" },
+  });
   if (result.error) throw result.error;
   if (result.signal) {
     process.exit(1);

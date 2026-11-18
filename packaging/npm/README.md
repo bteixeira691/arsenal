@@ -14,7 +14,15 @@ arm64/x64, Linux arm64/x64 (glibc), Windows x64.
 
 ## Uninstall
 
-Remove the global launcher:
+Remove Arsenal itself:
+
+```sh
+arsenal uninstall
+```
+
+This removes the binary, the launcher cache, and the global `arsenal-tui`
+package when installed through npm/Bun. Configuration and managed assets are
+preserved. The equivalent package-manager commands are:
 
 ```sh
 bun remove -g arsenal-tui
@@ -22,13 +30,13 @@ bun remove -g arsenal-tui
 npm uninstall -g arsenal-tui
 ```
 
-Remove an asset that Arsenal installed or manages:
+Remove an asset that Arsenal manages:
 
 ```sh
-arsenal uninstall              # choose from the installed asset list
-arsenal uninstall <name-or-path>
-arsenal uninstall <name-or-path> --kind skill
-arsenal uninstall <name-or-path> --purge
+arsenal remove              # choose from the installed asset list
+arsenal remove <name-or-path>
+arsenal remove <name-or-path> --kind skill
+arsenal remove <name-or-path> --purge
 ```
 
 By default the asset is moved to the Arsenal trash directory. `--purge` deletes
