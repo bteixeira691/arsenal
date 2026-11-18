@@ -40,9 +40,15 @@ cd packaging/npm
 npm publish --access public
 ```
 
-Or set the repository secret `NPM_TOKEN`; the release workflow's `publish-npm`
-job then publishes the package automatically when the tag matches
-`package.json`.
+Automatic publishing is opt-in: set the repository variable `PUBLISH_NPM` to
+`true` and the repository secret `NPM_TOKEN` to an npm token with publish
+rights. The release workflow's `publish-npm` job then publishes when the tag
+matches `package.json`. Without both, publish manually:
+
+```sh
+cd packaging/npm
+npm publish --access public
+```
 
 Set `repository.url` in `packaging/npm/package.json` to the real repository
 before publishing; the launcher derives `owner/repo` from it. Override at runtime

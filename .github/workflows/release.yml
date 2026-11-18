@@ -100,6 +100,7 @@ jobs:
 
   publish-npm:
     needs: release
+    if: vars.PUBLISH_NPM == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
