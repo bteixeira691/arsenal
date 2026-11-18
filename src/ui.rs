@@ -80,7 +80,7 @@ const HELP_GROUPS: &[(&str, &[Action])] = &[
 pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
     let theme = app.theme();
-    if area.width < 24 || area.height < 11 {
+    if area.width < 24 || area.height < 13 {
         let notice = Paragraph::new(" Terminal too small for arsenal ")
             .style(Style::new().fg(theme.error))
             .alignment(Alignment::Center);
@@ -88,7 +88,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         return;
     }
 
-    let tabs_height = if app.mode == Mode::Edit { 0 } else { 1 };
+    let tabs_height = if app.mode == Mode::Edit { 0 } else { 3 };
     let search_height = if app.mode == Mode::Edit { 0 } else { 5 };
     let chunks = Layout::vertical([
         Constraint::Length(1),
@@ -315,35 +315,37 @@ fn discard_modal(f: &mut Frame, area: Rect, theme: &ResolvedTheme) {
 }
 
 fn kind_tabs(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
+    let [_, content, _] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(0),
+    ])
+    .areas(area);
     let compact = area.width < 96;
     let mut entries: Vec<(String, usize, Color)> =
-        vec![("All".to_string(), app.assets.len(), theme.accent)];
+        vec![("ALL".to_string(), app.assets.len(), theme.accent)];
     for kind in Kind::ALL {
         let name = if compact {
             match kind {
-                Kind::Skill => "S",
-                Kind::Agent => "A",
-                Kind::Command => "C",
-                Kind::Rule => "R",
-                Kind::Snippet => "P",
+                Kind::Skill => "S".to_string(),
+                Kind::Agent => "A".to_string(),
+                Kind::Command => "C".to_string(),
+                Kind::Rule => "R".to_string(),
+                Kind::Snippet => "P".to_string(),
             }
         } else {
             match kind {
-                Kind::Skill => "Skills",
-                Kind::Agent => "Agents",
-                Kind::Command => "Commands",
-                Kind::Rule => "Rules",
-                Kind::Snippet => "Snippets",
+                Kind::Skill => "SKILLS".to_string(),
+                Kind::Agent => "AGENTS".to_string(),
+                Kind::Command => "COMMANDS".to_string(),
+                Kind::Rule => "RULES".to_string(),
+                Kind::Snippet => "SNIPPETS".to_string(),
             }
         };
-        entries.push((
-            name.to_string(),
-            app.counts[kind.index()],
-            theme.kind_color(kind),
-        ));
+        entries.push((name, app.counts[kind.index()], theme.kind_color(kind)));
     }
     entries.push((
-        if compact { "Src" } else { "Sources" }.to_string(),
+        if compact { "SRC" } else { "SOURCES" }.to_string(),
         app.cfg.sources.len(),
         theme.accent,
     ));
@@ -366,7 +368,7 @@ fn kind_tabs(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
         } else {
             spans.push(Span::styled(
                 format!(" {name} "),
-                Style::new().fg(theme.muted),
+                Style::new().fg(theme.muted).add_modifier(Modifier::BOLD),
             ));
             spans.push(Span::styled(
                 count.to_string(),
@@ -375,7 +377,7 @@ fn kind_tabs(f: &mut Frame, area: Rect, app: &App, theme: &ResolvedTheme) {
             spans.push(Span::raw(" "));
         }
     }
-    f.render_widget(Paragraph::new(Line::from(spans)), area);
+    f.render_widget(Paragraph::new(Line::from(spans)), content);
 }
 
 fn tab_active_style(color: Color, theme: &ResolvedTheme) -> Style {
