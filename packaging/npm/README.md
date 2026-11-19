@@ -3,6 +3,8 @@
 npm/Bun launcher for [Arsenal](https://github.com/bteixeira691/arsenal), a terminal
 UI for agent skills, agents, commands, and rules.
 
+![Arsenal TUI](https://raw.githubusercontent.com/bteixeira691/arsenal/main/images/layout.jpg)
+
 ```sh
 bun install -g arsenal-tui
 arsenal

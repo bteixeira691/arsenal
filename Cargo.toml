@@ -1,6 +1,6 @@
 [package]
 name = "arsenal"
-version = "0.6.5"
+version = "0.6.6"
 edition = "2024"
 rust-version = "1.88"
 description = "Terminal UI for cataloging, searching, and authoring agent skills, agents, commands, and rules"

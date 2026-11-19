@@ -1,53 +1,35 @@
 # Arsenal
 
-A terminal UI for the Markdown assets that power coding agents: **skills**,
-**agents**, **commands**, and **rules**. Browse, fuzzy-search, preview, create,
-edit, delete — and install a skill straight from a GitHub link.
+A terminal UI for the Markdown assets used by coding agents: **skills**,
+**agents**, **commands**, and **rules**. Browse, search, preview, create, edit,
+delete, and install them from one place.
 
-Arsenal is local-first: everything is plain Markdown on disk. Apart from an
-explicit `arsenal install` (git clone), it never talks to a network service,
-never rewrites files behind your back, and never takes ownership of your
-content.
+Arsenal is local-first. Assets stay as plain Markdown on disk; apart from an
+explicit `arsenal install`/`arsenal remove`, it never changes files outside the
+source roots you configure.
 
-```text
- ARSENAL · agents  ~/.config/arsenal/config.toml                       2/7 assets
- / audit                                                            sort kind
-╭ Assets 2 ──────────────────────────────╮╭ Preview · security-auditor ──────────────╮
-│ A reviewer  Reviews diffs for …        ││security-auditor                          │
-│ A security-auditor  Audits repositor…  ││A agent · ~/.claude/agents                │
-│                                        ││~/.claude/agents/security-auditor.md      │
-│                                        ││2d ago · 1.1 KB                           │
-│                                        ││                                          │
-│                                        ││Audit the repository and report …         │
-╰────────────────────────────────────────╯╰──────────────────────────────────────────╯
- NORMAL   / search  a new  i install  enter edit  e external  d delete  ? help
-```
+![Arsenal TUI](images/layout.jpg)
 
 ## Install
 
-Prebuilt packages come from tagged GitHub releases.
-
-### macOS and Linux
+### Bun or npm
 
 ```sh
 bun install -g arsenal-tui
-arsenal --version
+# or
+npm install -g arsenal-tui
+
+arsenal
 ```
 
-`npm install -g arsenal-tui` works too. The first run downloads the matching
-release binary for the platform, verifies its SHA-256, and caches it. Supported:
-macOS arm64/x64, Linux arm64/x64 (glibc). The package is published from this
-repository with `bun publish`; see [packaging](packaging/README.md).
+The first run downloads the matching release binary, verifies its SHA-256,
+caches it, and executes it.
 
-### Windows
+Supported targets:
 
-```sh
-winget install --id Bteixeira.Arsenal -e
-```
-
-Winget availability requires the generated manifest to be merged into
-`microsoft/winget-pkgs`; see [packaging](packaging/README.md). Until then, use
-`bun install -g arsenal-tui` on Windows as well.
+- macOS arm64 and x64
+- Linux arm64 and x64 (glibc)
+- Windows x64 — static MSVC runtime, no Visual C++ Redistributable required
 
 ### From source
 
@@ -55,18 +37,14 @@ Requires Rust 1.88+.
 
 ```sh
 cargo install --path . --root "$HOME/.local"
-arsenal --version
+arsenal
 ```
 
-For development, `cargo run -- --help`.
+For development:
 
-### Publishing a release
-
-Push a `v*` tag. `release-bun` builds macOS arm64/x64, Linux arm64/x64, and
-Windows x64, writes `.sha256` files, attaches them to the GitHub release, and
-publishes the Bun/npm package. `release-winget` waits for the Windows asset and
-opens the winget PR. Both publish steps require `PUBLISH_BUN` /
-`PUBLISH_WINGET` and their secrets; see [packaging](packaging/README.md).
+```sh
+cargo run -- --help
+```
 
 ## Quick start
 
@@ -75,36 +53,20 @@ arsenal                                  # use the configured sources
 arsenal --root skill=./skills --root agent=./agents
 arsenal --query deploy                   # start with a search filter
 arsenal list --json | jq                 # scriptable, no TUI
+
 arsenal install https://github.com/anthropics/skills/tree/main/skills/pdf
+arsenal remove pdf                       # move an asset to the trash
+arsenal uninstall                        # remove Arsenal itself
 ```
 
-On first launch Arsenal writes a commented config to
-`~/.config/arsenal/config.toml` and scans the conventional locations below.
-
-## Asset conventions
-
-| Kind       | Layout                          | Frontmatter                     |
-| ---------- | ------------------------------- | ------------------------------- |
-| `skill`    | `<root>/<name>/SKILL.md`        | `name`, `description`, `tags`   |
-| `agent`    | `<root>/<name>.md`              | `name`, `description`, `tools`  |
-| `command`  | `<root>/<name>.md`              | `description`                   |
-| `rule`     | `<root>/<name>.md`              | `description`, `globs`          |
-| `snippet`  | `<root>/<name>.md`              | `name`, `description`           |
-
-- Skills are directories containing `SKILL.md`; a flat `*.md` directly inside a
-  skill root is also accepted.
-- Other kinds are `*.md` files scanned recursively up to `behavior.scan_depth`.
-- Frontmatter is YAML between `---` lines. If YAML parsing fails, a lenient
-  `key: value` parser keeps the file usable. `tags` (or `keywords`) accepts a
-  comma list, an inline list, or a block list.
-- Displayed name: frontmatter `name`, then the directory name (skills) or file
-  stem. Displayed description: frontmatter `description`, then the first prose
-  line of the body.
+On first launch Arsenal writes a commented configuration to
+`~/.config/arsenal/config.toml` and scans the conventional source roots.
 
 ## Integrations
 
-Arsenal discovers the documented user and project roots for the main agent
-tools. Sources are labeled in the Sources tab and install form.
+Arsenal discovers the documented user and project roots for the major agent
+tools. Existing sources are labeled by integration in the Sources tab and the
+install/create forms.
 
 | Integration | User root | Project root | Kinds |
 | --- | --- | --- | --- |
@@ -116,194 +78,136 @@ tools. Sources are labeled in the Sources tab and install form.
 | Agents | `~/.agents`, `~/.agent` | `./.agents`, `./.agent` | skills, agents, commands, rules |
 | GitHub | — | `./.github` | skills |
 
-Each root follows the tool's normal `<kind>s/` layout, for example
-`~/.config/opencode/skills/<name>/SKILL.md`. New configs include these roots;
-existing configs keep their own source list. Missing directories are ignored;
-add custom or integration roots with `A`, `arsenal sources add`, or
-`[[sources]]`.
+Each root uses the tool's normal `<kind>s/` layout, for example
+`~/.config/opencode/skills/<name>/SKILL.md`.
 
-`arsenal integrations` prints the full path/status matrix; `--json` emits one
-object per root.
+When more than one destination exists, the create and install forms start at
+`choose integration`; select the target with `←`/`→` before submitting. With one
+destination it is preselected.
 
-Snippets default to `~/.config/arsenal/snippets` and `./.arsenal/snippets`.
-Duplicate paths are scanned once. `--root` replaces the configured source list
-entirely, which is handy for a single project.
+`arsenal integrations` prints every supported integration root and whether it
+exists; `--json` is available for scripting.
 
-## Adding extra skill folders
+### OMP discovery
 
-Press `A` in the TUI, enter an existing folder, choose the kind (`skill` by
-default), and press `enter`. Arsenal saves the source, rescans, and selects the
-new assets. The same works from the shell:
+OMP reads its native roots directly. It only reads foreign `~/.claude` user
+skills when `~/.omp/agent/config.yml` opts in:
 
-```sh
-arsenal sources add ~/extra-skills
-arsenal sources add ~/work/agent-assets --kind agent
-arsenal sources list
-arsenal sources list --json
-arsenal sources remove ~/extra-skills
+```yaml
+enabledProviders:
+  - claude
 ```
 
-The folder follows the normal layout: for skills it must contain
-`<name>/SKILL.md` children (or flat `*.md` files). Entries added this way live in
-`config.sources.toml` next to the main config, so `config.toml` — including your
-comments — is never rewritten. Relative paths resolve against the directory
-Arsenal runs in.
+Project-local `.claude` sources do not require this opt-in. Installs performed
+without an explicit choice default to OMP's native root in the CLI; the TUI
+requires a destination when several sources exist.
 
-### Sources tab
+## Asset conventions
 
-Press `6` (or `:sources`) to switch from the asset list to the source list. It
-shows every configured source with its kind, path, whether the directory exists,
-and how many assets it contributes. The preview resolves the absolute path and
-lists its assets; `/` filters sources by path, kind, or label. `y` copies the
-source path and `o` opens it in the file manager. The tab bar at the top always
-shows counts for every kind plus the number of sources.
+| Kind | Layout | Frontmatter |
+| --- | --- | --- |
+| `skill` | `<root>/<name>/SKILL.md` | `name`, `description`, `tags` |
+| `agent` | `<root>/<name>.md` | `name`, `description`, `tools` |
+| `command` | `<root>/<name>.md` | `description` |
+| `rule` | `<root>/<name>.md` | `description`, `globs` |
+| `snippet` | `<root>/<name>.md` | `name`, `description` |
+
+- Skills are directories containing `SKILL.md`; flat `*.md` files directly in a
+  skill root are also accepted.
+- Other kinds are `*.md` files scanned recursively up to the configured
+  `behavior.scan_depth`.
+- Frontmatter is YAML between `---` lines. If parsing fails, a lenient
+  `key: value` parser keeps the file usable. `tags`/`keywords` accepts a comma
+  list, an inline list, or a block list.
+- Displayed name: frontmatter `name`, then the directory name/file stem.
+- Displayed description: frontmatter `description`, then the first prose line.
 
 ## Keymaps
 
-Vim-style sequences are supported (`g g`, not just single keys). Every default
-below is remappable; see [Configuration](#configuration).
+Vim-style sequences are supported (`g g` is a sequence, not two independent
+keys). Every binding is remappable.
 
-| Key         | Action                                    |
-| ----------- | ----------------------------------------- |
-| `j` / `k` / `↓` / `↑` | Move down / up                 |
-| `g g` / `G` / `home` / `end` | Jump to top / bottom      |
-| `ctrl-d` / `ctrl-u` | Half page down / up                |
-| `ctrl-f` / `ctrl-b` / `pgdn` / `pgup` | Page down / up      |
-| `J` / `K`   | Scroll preview down / up                  |
-| `/`         | Focus the always-visible search bar; `enter` keeps, `esc` reverts |
-| `ctrl-h`    | Focus the search bar                       |
-| `ctrl-l`    | Focus the preview pane                     |
-| `n` / `N`   | Next / previous result (wraps)            |
-| `0`–`5`     | All kinds, skills, agents, commands, rules, snippets |
-| `6`         | Sources tab                               |
-| `g k`       | Edit key bindings                         |
-| `s`         | Cycle sort: kind, name, modified, path    |
-| `F`         | Toggle content search (document bodies)   |
-| `t`         | Toggle the preview pane                   |
-| `T`         | Cycle theme: dark, light, mono            |
-| `a`         | Create an asset                           |
-| `i`         | Install a skill/asset from a GitHub URL   |
-| `A`         | Add an extra source folder                |
-| `enter`     | Edit the selected document in-app         |
-| `e`         | Edit in `$EDITOR` (TUI suspends)          |
-| `d`         | Delete (confirmation, moves to trash)     |
-| `y`         | Copy the path with OSC 52                 |
-| `o`         | Reveal in the file manager                |
-| `R`         | Rescan sources                            |
-| `g c`       | Edit the configuration                    |
-| `:`         | Command palette                           |
-| `?`         | Keymap and command help                   |
-| `q`         | Quit                                      |
+| Key | Action |
+| --- | --- |
+| `j` / `k` / `↓` / `↑` | Move down / up |
+| `g g` / `G` / `home` / `end` | Top / bottom |
+| `ctrl-d` / `ctrl-u` | Half page down / up |
+| `ctrl-f` / `ctrl-b` / `pgdn` / `pgup` | Page down / up |
+| `J` / `K` | Scroll preview |
+| `/` | Focus search |
+| `ctrl-h` | Focus search |
+| `ctrl-l` | Focus preview |
+| `n` / `N` | Next / previous match |
+| `0`–`5` | All kinds, skills, agents, commands, rules, snippets |
+| `6` | Sources tab |
+| `s` | Cycle sort |
+| `F` | Toggle content search |
+| `t` | Toggle preview |
+| `T` | Cycle theme |
+| `a` | Create an asset |
+| `i` | Install from git |
+| `A` | Add a source folder |
+| `enter` | Edit in the built-in editor |
+| `e` | Edit in `$EDITOR` |
+| `d` | Delete (confirmation, moves to trash) |
+| `y` | Copy path with OSC 52 |
+| `o` | Reveal in file manager |
+| `R` | Rescan sources |
+| `g c` | Edit the configuration |
+| `g k` | Edit key bindings |
+| `:` | Command palette |
+| `?` | Help |
+| `q` | Quit |
 
-`ctrl-c` quits outside the inline editor; inside the editor it is copy.
-`esc` clears the pending key sequence or the active search. Modals capture keys,
-so `a`, `d`, and friends are literal text there.
+`ctrl-c` quits outside the inline editor; inside the editor it is copy. `esc`
+clears the pending sequence or active search.
 
-With the preview focused (`ctrl-l`), the preview border and status chip turn
-accent-colored, `j`/`k` and the navigation keys scroll the preview instead of
-moving the asset selection, and `ctrl-h` returns to the search bar. `ctrl-h`
-from the asset list also opens the search bar.
+On macOS Terminal, `ctrl-h` arrives as Backspace; Arsenal treats Backspace in
+Normal mode as focus-search. `ctrl-left` and `ctrl-right` also focus the search
+and preview panes.
 
-macOS Terminal sends `ctrl-h` as Backspace. In Normal mode Arsenal treats
-Backspace as “focus search”, so it still works there. `ctrl-left` and
-`ctrl-right` are reliable alternatives for search and preview focus in terminals
-that reserve `ctrl-h`/`ctrl-l`.
+The preview can be focused with `ctrl-l`; `j`/`k`, arrows, `g g`/`G`, page keys,
+and `ctrl-d`/`ctrl-u` then scroll the preview instead of moving the selection.
 
-Arrow keys, `home`/`end`, and `pageup`/`pagedown` always navigate the list, or
-scroll the preview while it is focused, even if you remap the vim-style
-bindings. In dialogs they cycle choices and fields; in the editor they move the
-cursor. `[keys]` remaps the named actions only.
+## Search
 
-### Search
+The search bar sits below the header. Press `/` (or `ctrl-h`) to focus it; the
+list and counts update live. `enter` keeps the query, `esc` restores the previous
+query, and `ctrl-l` moves to the preview with the query preserved.
 
-The search bar sits under the header and always shows the active query. Press
-`/` to focus it and type; the list and counts update live. `enter` leaves the
-bar with the query applied, `esc` restores the previous query. Terms are ANDed
-and fuzzy-matched against name, kind, tags, and description. A term prefixed
-with `#` filters tags by substring:
+Terms are ANDed and fuzzy-matched against name, kind, tags, and description. A
+term prefixed with `#` filters tags:
 
 ```text
 /railway
 /#ops deploy
 ```
 
-Results are ranked by match score; with an empty query the list follows the
-current sort mode. The header shows `visible/total assets` and the active kind
-filter.
+Press `F` or use `:content on` to search document bodies too. Matching preview
+lines are underlined.
 
-Press `F` (or `:content on`) to also search document bodies. Body matches are
-case-insensitive substrings, ranked below metadata matches; matching preview
-lines are underlined and the preview shows how many lines matched. Content
-search is session-toggled and defaults to `search.content` in the config.
+## Installing assets
 
-### Duplicate detection
-
-Arsenal fingerprints every file. Identical copies installed in several roots
-(for example `~/.claude/skills` and `~/.agents/skills`) show `×N` beside the
-name, and the preview lists the other paths. This is detection only; it never
-merges or deletes anything.
-
-## Installing from GitHub
-
-`i` (or `:install <url>`) opens the install form. Paste a GitHub repository or
-tree URL, choose the kind and destination source, and press `enter`. The clone
-runs in a background thread while a progress modal shows git's receiving-objects
-percentage, then the resolve and copy phases. The terminal stays usable; when it
-finishes the modal closes, the list refreshes, and the new asset is selected.
+Press `i` or run:
 
 ```sh
-# a skill inside a monorepo (tree URL)
-arsenal install https://github.com/anthropics/skills/tree/main/skills/pdf
-
-# repository root that is itself a skill
-arsenal install https://github.com/owner/my-skill
-
-# blob URL for a single SKILL.md
-arsenal install https://github.com/owner/repo/blob/main/skills/pdf/SKILL.md
-
-# other kinds, explicit destination, renamed install
-arsenal install https://github.com/owner/agents --kind agent --dest ~/.claude/agents
-arsenal install owner/repo --subdir skills/deploy --name deploy
-
-# replace an existing install (old copy moves to trash)
-arsenal install <url> --force
+arsenal install <URL|owner/repo> [--kind KIND] [--dest PATH]
+                [--name NAME] [--ref REF] [--subdir PATH] [--force]
 ```
 
-Behavior:
+GitHub `tree/<ref>/<path>` and `blob/<ref>/<path>` URLs work, as do `owner/repo`
+and git/ssh/file URLs.
 
-- Shallow `git clone --depth 1` into a temporary directory; only the selected
-  asset is copied, and the clone is removed afterwards. `--ref` accepts a
-  branch, tag, or commit (falls back to a full clone for commit SHAs).
-- GitHub `tree/<ref>/<path>` and `blob/<ref>/<path>` URLs carry their own ref and
-  subdirectory. `owner/repo` shorthand and any git/ssh/file URL also work.
-- Skills are copied as whole directories, including `scripts/`, `references/`,
-  and other bundled files. The install name comes from `--name`, then the
-  skill's frontmatter `name`, then the directory or repository name.
-- If a repository contains several skills and none was selected, the error lists
-  the candidates; rerun with the tree URL or `--subdir`.
-- Agents, commands, rules, and snippets install a single `*.md` file. The
-  resolver prefers `--name.md`, then `<repo>.md`, then the only non-README
-  Markdown file in the selected directory.
-- The CLI destination defaults to the OMP-native source
-  (`~/.omp/agent/<kind>s`) if configured, otherwise the first configured source
-  for the kind. In the TUI, the install form starts as `choose integration`
-  whenever more than one destination source exists, so each clone must name its
-  target. Use `--dest` for scripted installs.
-- omp reads its native roots directly. It only reads foreign `~/.claude` user
-  skills when `~/.omp/agent/config.yml` opts in:
-
-  ```yaml
-  enabledProviders:
-    - claude
-  ```
-
-  Project-local `.claude` sources do not need this opt-in.
-- Add any other root as a `[[sources]]` entry to make it selectable.
-- Nothing is executed during install: it is a clone plus a file copy.
+- The repository is shallow-cloned into a temporary directory; only the selected
+  asset is copied.
+- Skills are copied as whole directories, including scripts and references.
+- Agents, commands, rules, and snippets install a single Markdown file.
+- The TUI shows clone/copy progress and closes automatically on success.
+- `--force` replaces an existing destination by moving the old copy to trash.
 
 ## Creating assets
 
-`a` (or `:new agent`) opens a form:
+Press `a` or use `:new agent`:
 
 ```text
 ╭ New skill ─────────────────────────────────────────────╮
@@ -311,58 +215,61 @@ Behavior:
 │ name        incident-runbook                           │
 │ description Step-by-step incident response for on-call │
 │ source      choose integration                         │
-│ enter creates the file; tab cycles fields               │
+│ enter creates the file; tab cycles fields              │
 ╰────────────────────────────────────────────────────────╯
 ```
 
-- `tab` / `shift-tab` move between fields; `←`/`→` change kind and source.
-- When more than one destination source exists, `source` starts as
-  `choose integration` and must be selected explicitly. An arrow key selects the
-  first integration; press again to cycle. With a single source it is preselected.
-- `enter` validates and writes the file, then selects it.
-- Names are slugified (`Team Deploy` → `team-deploy`); existing files are never
-  overwritten.
-- Each kind gets a frontmatter-complete scaffold with a purpose-specific body.
+`tab`/`shift-tab` move between fields, `←`/`→` change kind and destination, and
+`enter` writes the scaffold and selects it. Existing files are never
+overwritten.
 
-## Editing documents
+## Removing assets and Arsenal
 
-`enter` opens the selected Markdown file — frontmatter and body — in a
-full-pane editor with line numbers. The pane title shows `●` while the buffer
-has unsaved changes.
+Remove one managed asset:
 
-| Key | Action |
-| --- | --- |
-| `ctrl-s` | Save atomically, then rescan and refresh the preview |
-| `esc` | Exit; if the buffer is dirty, asks before discarding |
-| `ctrl-z` / `ctrl-r` | Undo / redo |
-| arrows, `home` / `end`, `pageup` / `pagedown` | Navigate |
-| `tab` | Insert a tab (4 columns) |
+```sh
+arsenal remove                 # choose from the installed asset list
+arsenal remove <name|path>
+arsenal remove <name|path> --kind skill
+arsenal remove <name|path> --purge
+```
 
-Saves write to a temporary file in the same directory, preserve the original
-permissions, and atomically replace the document. The list, search index, and
-preview reload in place, so a renamed frontmatter `name` takes effect
-immediately. `e` still opens the file in `$EDITOR` when you want your own
-editor.
+By default assets move to `~/.local/share/arsenal/trash`. `--purge` deletes
+permanently. Skills are removed as whole directories.
 
-## Command palette
+Remove Arsenal itself:
 
-| Command               | Effect                                       |
-| --------------------- | -------------------------------------------- |
-| `:new <kind>`         | Open the create form (`skill` is the default)|
-| `:install <url>`      | Clone a skill/asset from GitHub              |
-| `:source <path>`      | Add an extra source folder                   |
-| `:sources`            | Show the sources tab                         |
-| `:keys`               | Edit key bindings                            |
-| `:inline`             | Edit the selected document in-app            |
-| `:filter <kind\|all>` | Restrict the list                            |
-| `:sort <mode>`        | `kind`, `name`, `modified`, `path`           |
-| `:theme <preset>`     | `dark`, `light`, `mono`                      |
-| `:edit`, `:delete`    | Apply to the selected asset                  |
-| `:yank`, `:reveal`    | Copy path, reveal in file manager            |
-| `:rescan`, `:w`       | Rescan all sources                           |
-| `:config`             | Edit the config, then reload it              |
-| `:warnings`           | Show the first configuration/scan warning    |
-| `:help`, `:q`         | Help, quit                                   |
+```sh
+arsenal uninstall
+```
+
+This removes the running binary, the launcher cache, and the global
+`arsenal-tui` package when launched through npm/Bun. Configuration and managed
+assets are preserved.
+
+## Editing
+
+`enter` opens the selected Markdown file in a full-pane editor with line
+numbers. `ctrl-s` saves atomically; dirty buffers ask before discard. `ctrl-z` /
+`ctrl-r` undo and redo. `e` still opens the document in `$EDITOR`.
+
+## Sources
+
+Press `6` for the Sources tab. It shows every configured root with its
+integration label, kind, existence, and asset count. `/` filters sources; `y`
+copies the path; `o` opens it.
+
+Add a source from the TUI with `A`, or from the shell:
+
+```sh
+arsenal sources add ~/extra-skills
+arsenal sources add ~/work/agent-assets --kind agent
+arsenal sources list [--json]
+arsenal sources remove ~/extra-skills
+```
+
+Sources added this way are stored in `config.sources.toml` next to the main
+config; `config.toml` is not rewritten.
 
 ## CLI
 
@@ -382,23 +289,8 @@ arsenal config init [--force]
 arsenal config validate
 ```
 
-`integrations` prints every supported tool/kind root with `ok` or `missing`;
-`--json` emits one object per root. `list` prints `kind  name  path` columns;
-`--json` emits one object per asset with `kind`, `name`, `description`, `tags`,
-`path`, `source`, and `modified` (Unix seconds). Scan warnings go to stderr.
-
-`uninstall` removes Arsenal itself: the binary, the launcher cache, and the
-global `arsenal-tui` package when started through the npm/Bun launcher. The
-configuration and managed assets are left in place.
-
-`remove` without an argument lists installed assets and asks which one to
-remove. You can also pass an exact asset name or path, filter by `--kind` when
-names collide, and move the skill directory or single file to the Arsenal trash.
-Pass `--purge` to delete permanently. It refuses ambiguous matches and paths
-that are not part of the configured sources.
-
-`config validate` parses the file, reports invalid colors/keys/presets, and exits
-non-zero only when the file cannot be read or parsed.
+`list` prints `kind name path`; `--json` emits one object per asset with `kind`,
+`name`, `description`, `tags`, `path`, `source`, and `modified` (Unix seconds).
 
 ## Configuration
 
@@ -410,168 +302,61 @@ Resolution order:
 4. `~/.config/arsenal/config.toml`
 
 The file is created on first use. `arsenal config init --force` rewrites it.
-Folders added with `arsenal sources add` or `A` are kept separately in
-`config.sources.toml` in the same directory; the main file is never rewritten.
-Bindings changed with `g k` (or `:keys`) are stored in `config.keys.toml` the
-same way.
 
 ```toml
 [editor]
-# Empty: $VISUAL, then $EDITOR, then vi.
-command = ""
-# {file} and {line} are substituted; the path is appended if {file} is absent.
+command = ""                 # empty: $VISUAL, $EDITOR, then vi
 args = ["+{line}", "{file}"]
 
 [layout]
-list_width = 38      # percent of the main area
+list_width = 38
 show_preview = true
 
 [search]
-content = false      # search document bodies by default (F toggles)
+content = false              # search bodies by default
 
 [behavior]
-scan_depth = 4       # recursion for non-skill sources (1–12)
+scan_depth = 4
 confirm_delete = true
-trash = true         # move to the trash directory instead of unlinking
+trash = true                 # move deletes to the trash directory
 
 [theme]
-preset = "dark"      # dark | light | mono
-# All optional; names or #rrggbb.
+preset = "dark"              # dark | light | mono
 # accent = "cyan"
 # border = "darkgray"
-# muted  = "gray"
+# muted = "gray"
 # success = "green"
 # warning = "yellow"
-# error   = "red"
-# skill   = "cyan"
-# agent   = "magenta"
+# error = "red"
+# skill = "cyan"
+# agent = "magenta"
 # command = "green"
-# rule    = "yellow"
+# rule = "yellow"
 # snippet = "blue"
 
 [keys]
-# act = "sequence"; space separates chords; "" disables a binding.
-quit = "q"
-search = "/"
-top = "g g"
-half_page_down = "ctrl-d"
-# ...
-
-[[sources]]
-kind = "skill"
-path = "~/.claude/skills"
-# label = "personal"
-# depth = 3
-
-[[sources]]
-kind = "agent"
-path = "./agents"
+# "quit" = "q"
+# "search" = "/"
+# "focus_preview" = "ctrl-l"
 ```
 
-Paths expand a leading `~` and `$VAR` / `${VAR}`. Unknown variables are left
-visible instead of silently collapsing.
-
-### Editor integration
-
-The TUI restores the terminal, runs the editor to completion, then re-initializes
-and rescans. Defaults suit vim/neovim (`+{line} {file}`).
-
-```toml
-[editor]
-command = "code --wait"
-args = ["--goto", "{file}:{line}"]
-
-# or a GUI editor that blocks
-# command = "zed --wait"
-```
-
-Without `[editor].command`, `$VISUAL` / `$EDITOR` are used, splitting on
-whitespace. Shell expansions are not evaluated; put fixed arguments in `args`.
-
-### Themes
-
-`dark`, `light`, and `mono` presets. `mono` uses reverse video and no colors, for
-minimal terminals. `T` cycles presets for the session; edit `theme.preset` to
-make it permanent. All color fields accept terminal names (`cyan`, `lightred`,
-`darkgray`, …) or `#rrggbb`.
-
-### Key remapping
-
-Bindings are sequences of chords. Modifiers use `ctrl-`, `alt-`, `shift-`
-(vim style) or `+` (`ctrl+shift+k`). Named keys: `enter`, `esc`, `tab`,
-`backtab`, `space`, `backspace`, `delete`, `insert`, `home`, `end`, `pageup`,
-`pagedown`, `left`, `right`, `up`, `down`, `f1`…`f24`.
-
-Change bindings without editing TOML: press `g k` (or `:keys`). Navigate with
-`j`/`k`, press `enter` and then the key to bind, `backspace` to unbind, `r` to
-reset an action to its configured/default binding, and `esc` to close. Changes
-are saved to `config.keys.toml` and applied immediately.
-
-Unknown actions, unparsable sequences, and duplicate chords are reported as
-warnings on startup (press `?`), and the built-in binding is kept.
-
-## Deletion and the trash
-
-By default `d` asks for confirmation and moves the file to:
-
-```text
-$XDG_DATA_HOME/arsenal/trash/<timestamp>/<filename>
-# or ~/.local/share/arsenal/trash/...
-```
-
-Nothing is removed permanently. Set `behavior.trash = false` to unlink, or
-`confirm_delete = false` to skip the dialog. Skills lose only `SKILL.md`; the
-containing directory is left in place.
-
-## Clipboard
-
-`y` sends an OSC 52 escape sequence with the asset path. Most modern terminals
-support it; tmux requires `set -g set-clipboard on` and a terminal that allows
-it. If your terminal does not support OSC 52, nothing is copied and the
-statusline still reports that the sequence was sent.
-
-## Design notes
-
-- Markdown and `SKILL.md` layouts are the source of truth; there is no database.
-- Installs clone to a temporary directory and copy only the chosen asset; the
-  clone is always deleted. No install scripts run.
-- No file watcher: `R` rescans explicitly; saving or closing the inline editor
-  also refreshes the list and preview.
-- The inline editor writes atomically (temp file + rename) and preserves file
-  permissions; unsaved buffers require confirmation before closing.
-- No mouse capture, so the terminal's native selection and copy keep working.
-- Previews are capped at 4,000 body lines; very large files stay responsive.
-- Scan warnings are bounded and never abort a session.
+Keys changed in the `g k` editor are stored in `config.keys.toml`. Sources added
+with `A` or `arsenal sources add` are stored in `config.sources.toml`.
 
 ## Development
 
 ```sh
-cargo fmt
+cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
-cargo run -- --config ./tmp/config.toml --root skill=./tmp/skills
+cargo run
 ```
 
-Layout:
+The repository has two CI workflows:
 
-```text
-src/main.rs    CLI, terminal lifecycle, external effects, OSC 52
-src/app.rs     state machine, modals, commands, selection/search wiring
-src/asset.rs   scanning, frontmatter, scaffolding, trash
-src/config.rs  config model, path resolution, themes
-src/keys.rs    chords, sequences, actions, keymap resolution
-src/search.rs  fuzzy scoring and ordering
-src/ui.rs      rendering
-src/editor.rs  $EDITOR and file-manager integration
-src/install.rs git cloning, URL parsing, asset resolution
-packaging/     npm launcher, winget manifests, release notes
-```
-
-Unit tests cover frontmatter fallbacks, scanning, scaffolding, trash, fuzzy
-filtering, sorting, key sequences, UTF-8 text editing, form validation, delete
-confirmation, inline editing/save/undo, content search, duplicate detection,
-source overlays, key overlays, keymap capture, GitHub URL parsing, and
-install/force/ambiguity cases.
+- `ci.yml` — format, clippy, tests, release build, and packaging checks.
+- `release-bun.yml` — tag-triggered binary build, GitHub release, and Bun/npm
+  publish.
 
 ## License
 

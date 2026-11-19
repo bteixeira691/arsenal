@@ -55,15 +55,12 @@ const asset = "arsenal-x86_64-pc-windows-msvc.exe";
 const installerUrl = `https://github.com/${repo}/releases/download/${tag}/${asset}`;
 const repoUrl = `https://github.com/${repo}`;
 
-const versionManifest = `# yaml-language-server: $schema=https://aka.ms/winget-manifest.version.1.10.0.schema.json
 PackageIdentifier: ${id}
 PackageVersion: ${version}
 DefaultLocale: en-US
 ManifestType: version
-ManifestVersion: 1.10.0
 `;
 
-const installerManifest = `# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.10.0.schema.json
 PackageIdentifier: ${id}
 PackageVersion: ${version}
 Installers:
@@ -74,10 +71,8 @@ Installers:
     Commands:
       - arsenal
 ManifestType: installer
-ManifestVersion: 1.10.0
 `;
 
-const localeManifest = `# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.10.0.schema.json
 PackageIdentifier: ${id}
 PackageVersion: ${version}
 PackageLocale: en-US
@@ -97,7 +92,6 @@ Tags:
   - ratatui
   - tui
 ManifestType: defaultLocale
-ManifestVersion: 1.10.0
 `;
 
 mkdirSync(out, { recursive: true });
