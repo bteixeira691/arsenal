@@ -53,5 +53,10 @@ Environment overrides:
 - `ARSENAL_RELEASE_BASE_URL` — mirror or test a release directory.
 - `ARSENAL_CACHE_DIR` — override the cache location.
 
+The launcher retries failed downloads and falls back to `curl` on macOS/Linux or
+PowerShell/`curl.exe` on Windows. On a proxied network, set `HTTPS_PROXY` /
+`HTTP_PROXY`, use a mirror through `ARSENAL_RELEASE_BASE_URL`, or install
+offline with `ARSENAL_BINARY`.
+
 The CLI accepts the same flags as the Rust binary. See the main repository
 README for keymaps and configuration.

@@ -25,6 +25,11 @@ arsenal
 The first run downloads the matching release binary, verifies its SHA-256,
 caches it, and executes it.
 
+The launcher retries downloads and falls back to `curl` on macOS/Linux or
+PowerShell/`curl.exe` on Windows when `fetch` cannot reach GitHub. For a proxy,
+set `HTTPS_PROXY`/`HTTP_PROXY`, point `ARSENAL_RELEASE_BASE_URL` at a mirror, or
+set `ARSENAL_BINARY` to a local build.
+
 Supported targets:
 
 - macOS arm64 and x64

@@ -54,12 +54,77 @@ const suffix = process.platform === "win32" ? ".exe" : "";
 const asset = `arsenal-${target}${suffix}`;
 const binaryPath = path.join(cacheRoot(), `v${VERSION}`, `arsenal${suffix}`);
 
-async function download(url) {
-  const response = await fetch(url, { redirect: "follow" });
-  if (!response.ok) {
-    throw new Error(`download failed (${response.status}) from ${url}`);
+function describeError(error) {
+  const cause = error && error.cause;
+  const detail = cause && (cause.code || cause.message);
+  return `${error && error.message ? error.message : error}${detail ? ` (${detail})` : ""}`;
+}
+
+function shellDownload(url) {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "arsenal-download-"));
+  const file = path.join(directory, "asset");
+  const quote = (value) => `'${String(value).replace(/'/g, "''")}'`;
+  try {
+    let result;
+    if (process.platform === "win32") {
+      result = spawnSync(
+        "powershell.exe",
+        [
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          `Invoke-WebRequest -UseBasicParsing -Uri ${quote(url)} -OutFile ${quote(file)}`,
+        ],
+        { stdio: "ignore" },
+      );
+      if (!result || result.status !== 0) {
+        result = spawnSync(
+          "curl.exe",
+          ["-fsSL", "--retry", "3", "--connect-timeout", "15", "-o", file, url],
+          { stdio: "ignore" },
+        );
+      }
+    } else {
+      result = spawnSync(
+        "curl",
+        ["-fsSL", "--retry", "3", "--connect-timeout", "15", "-o", file, url],
+        { stdio: "ignore" },
+      );
+    }
+    if (!result || result.status !== 0) {
+      throw new Error("curl/PowerShell fallback failed");
+    }
+    return fs.readFileSync(file);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
   }
-  return Buffer.from(await response.arrayBuffer());
+}
+
+async function download(url) {
+  const failures = [];
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      const response = await fetch(url, {
+        redirect: "follow",
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (!response.ok) {
+        throw new Error(`download failed (${response.status}) from ${url}`);
+      }
+      return Buffer.from(await response.arrayBuffer());
+    } catch (error) {
+      failures.push(describeError(error));
+      if (attempt < 3) {
+        await new Promise((resolve) => setTimeout(resolve, attempt * 1_000));
+      }
+    }
+  }
+  try {
+    return shellDownload(url);
+  } catch (error) {
+    failures.push(describeError(error));
+  }
+  throw new Error(`download failed from ${url}: ${failures.join("; ")}`);
 }
 
 async function ensureBinary() {
@@ -119,7 +184,10 @@ async function ensureBinary() {
 })().catch((error) => {
   console.error(`arsenal: ${error.message}`);
   console.error(
-    "Set ARSENAL_BINARY to a local build, or install from source: cargo install --path .",
+    "Check network/proxy access to GitHub, or set ARSENAL_RELEASE_BASE_URL to a mirror.",
+  );
+  console.error(
+    "For an offline install, set ARSENAL_BINARY to a local binary or use: cargo install --path .",
   );
   process.exit(1);
 });
