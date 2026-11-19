@@ -32,8 +32,8 @@ Visual C++ Redistributable (`VCRUNTIME140.dll`).
 ## Release
 
 ```sh
-git tag v0.6.5
-git push origin v0.6.5
+git tag v0.7.0
+git push origin v0.7.0
 ```
 
 `.github/workflows/release-bun.yml` validates the tag against `Cargo.toml` and

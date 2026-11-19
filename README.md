@@ -61,6 +61,7 @@ arsenal list --json | jq                 # scriptable, no TUI
 
 arsenal install https://github.com/anthropics/skills/tree/main/skills/pdf
 arsenal remove pdf                       # move an asset to the trash
+arsenal mcp                              # expose assets to an agent over MCP
 arsenal uninstall                        # remove Arsenal itself
 ```
 
@@ -284,6 +285,7 @@ arsenal list [--json] [--kind KIND] [--sort MODE] [--content]
 arsenal install <URL|owner/repo> [--kind KIND] [--dest PATH] [--name NAME]
                 [--ref REF] [--subdir PATH] [--force]
 arsenal remove [NAME|PATH] [--kind KIND] [--purge]
+arsenal mcp
 arsenal uninstall
 arsenal sources list [--json]
 arsenal sources add <PATH> [--kind KIND]
@@ -296,6 +298,62 @@ arsenal config validate
 
 `list` prints `kind name path`; `--json` emits one object per asset with `kind`,
 `name`, `description`, `tags`, `path`, `source`, and `modified` (Unix seconds).
+
+## MCP server
+
+`arsenal mcp` runs a [Model Context Protocol](https://modelcontextprotocol.io)
+server over stdio, so an agent can inspect and change the same assets the TUI
+manages. It uses the same configuration, `--root` overrides, and source roots;
+stdout carries JSON-RPC only and warnings go to stderr.
+
+Register it with any stdio MCP client. For Claude Code:
+
+```sh
+claude mcp add arsenal -- arsenal mcp
+```
+
+For Claude Desktop or another `mcpServers` config:
+
+```json
+{
+  "mcpServers": {
+    "arsenal": {
+      "command": "arsenal",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+Add global flags before the subcommand to pin roots:
+
+```json
+{
+  "mcpServers": {
+    "arsenal": {
+      "command": "arsenal",
+      "args": ["--root", "skill=/absolute/path/to/skills", "mcp"]
+    }
+  }
+}
+```
+
+Tools:
+
+| Tool | Purpose |
+| --- | --- |
+| `list_assets` | Filter by kind, fuzzy query, `#tag`, or body content |
+| `read_asset` | Read Markdown, metadata, and a skill's file list |
+| `create_asset` | Scaffold or write a new asset in a configured root |
+| `write_asset` | Replace an existing asset's full Markdown document |
+| `delete_asset` | Move an asset to the trash, or `purge` it |
+| `install_asset` | Clone a GitHub/git asset into a configured root |
+| `list_sources` | Show configured roots, kinds, and existence |
+
+Assets are also exposed as `file://` resources via `resources/list` and
+`resources/read`. Writes are restricted to assets found in configured source
+roots; creation and installation only target configured roots. Deletes honor
+`behavior.trash` and move to `~/.local/share/arsenal/trash` by default.
 
 ## Configuration
 

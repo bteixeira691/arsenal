@@ -7,6 +7,7 @@ mod editor;
 mod install;
 mod integrations;
 mod keys;
+mod mcp;
 mod search;
 mod ui;
 
@@ -93,6 +94,8 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// Serve assets to an AI agent over the Model Context Protocol (stdio)
+    Mcp,
     /// Remove an installed asset (moves it to trash by default)
     Remove {
         /// Asset name or path; omit to choose interactively
@@ -266,6 +269,13 @@ fn run(cli: Cli) -> Result<()> {
                 None => None,
             };
             remove_asset(&cfg, asset.as_deref(), kind, purge)
+        }
+        Some(Command::Mcp) => {
+            let (cfg, warnings) = load_config(&config_path, &cli.roots)?;
+            for warning in warnings {
+                eprintln!("warning: {warning}");
+            }
+            mcp::serve(cfg, config_path)
         }
         Some(Command::Uninstall) => uninstall_self(),
         None => {

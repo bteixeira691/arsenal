@@ -2,7 +2,6 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
@@ -143,26 +142,6 @@ fn paths_equal(a: &Path, b: &Path) -> bool {
         (Ok(left), Ok(right)) => left == right,
         _ => false,
     }
-}
-
-fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let mut temp = tempfile::NamedTempFile::new_in(parent)?;
-    temp.write_all(contents.as_bytes())?;
-    temp.flush()?;
-    temp.as_file().sync_all()?;
-    if let Ok(metadata) = fs::metadata(path) {
-        temp.as_file().set_permissions(metadata.permissions())?;
-    }
-    #[cfg(windows)]
-    if path.exists() {
-        fs::remove_file(path)?;
-    }
-    temp.persist(path).map_err(|error| error.error)?;
-    Ok(())
 }
 
 fn char_to_byte(text: &str, char_index: usize) -> usize {
@@ -1398,7 +1377,7 @@ impl App {
         };
         let path = editor.path.clone();
         let text = editor.textarea.lines().join("\n");
-        match write_atomic(&path, &text) {
+        match asset::write_atomic(&path, &text) {
             Ok(()) => {
                 if let Some(editor) = self.editor.as_mut() {
                     editor.dirty = false;
