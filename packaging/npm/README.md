@@ -10,7 +10,8 @@ arsenal
 
 The first run downloads the matching release binary from GitHub, verifies its
 SHA-256 checksum, caches it, and executes it. Supported targets: macOS
-arm64/x64, Linux arm64/x64 (glibc), Windows x64.
+arm64/x64, Linux arm64/x64 (glibc), Windows x64 (static MSVC runtime; no VC++
+Redistributable required).
 
 ## Uninstall
 

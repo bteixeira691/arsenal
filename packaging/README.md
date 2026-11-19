@@ -19,6 +19,9 @@ arsenal-x86_64-pc-windows-msvc.exe
 <each>.sha256
 ```
 
+The Windows executable is built with the static MSVC runtime, so it does not
+require the Visual C++ Redistributable (`VCRUNTIME140.dll`).
+
 ## Release
 
 ```sh
