@@ -4,6 +4,7 @@
 //! exposes the configured asset roots as MCP tools and resources so an agent
 //! can inspect, create, edit, install, and remove assets without the TUI.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -143,6 +144,7 @@ impl Server {
             "delete_asset" => self.delete_asset(&arguments),
             "install_asset" => self.install_asset(&arguments),
             "list_sources" => self.list_sources(),
+            "server_health" => Ok(health_value(&self.cfg, &self.config_path).0),
             _ => Err(format!("unknown tool `{name}`; call tools/list")),
         };
 
@@ -439,6 +441,115 @@ pub fn serve(cfg: Config, config_path: PathBuf) -> Result<()> {
     Ok(())
 }
 
+/// Run a one-shot preflight check without starting the server. Returns whether
+/// the configuration is healthy; the caller decides the process exit code.
+pub fn health(cfg: &Config, config_path: &Path, json: bool) -> Result<bool> {
+    let (value, healthy) = health_value(cfg, config_path);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&value)?);
+    } else {
+        println!(
+            "status:    {}",
+            value["status"].as_str().unwrap_or("unknown")
+        );
+        println!("version:   {}", value["version"].as_str().unwrap_or("?"));
+        println!("protocol:  {}", value["protocol"].as_str().unwrap_or("?"));
+        println!(
+            "config:    {}",
+            value["config"].as_str().unwrap_or("unknown")
+        );
+        println!(
+            "sources:   {}/{} exist",
+            value["sources_active"], value["sources_total"]
+        );
+        println!(
+            "assets:    {} ({})",
+            value["asset_total"],
+            asset_count_summary(&value["assets"])
+        );
+        for warning in value["warnings"].as_array().into_iter().flatten() {
+            if let Some(warning) = warning.as_str() {
+                println!("warning:   {warning}");
+            }
+        }
+    }
+    io::stdout().flush().context("writing health report")?;
+    Ok(healthy)
+}
+
+fn health_value(cfg: &Config, config_path: &Path) -> (Value, bool) {
+    let report = asset::scan(&cfg.sources, &cfg.behavior);
+    let status = if report.active_sources == 0 {
+        "unhealthy"
+    } else if report.warnings.is_empty() {
+        "ok"
+    } else {
+        "degraded"
+    };
+    let healthy = status != "unhealthy";
+
+    let mut counts: BTreeMap<&'static str, usize> = BTreeMap::new();
+    for asset in &report.assets {
+        *counts.entry(asset.kind.as_str()).or_default() += 1;
+    }
+
+    let sources: Vec<Value> = cfg
+        .sources
+        .iter()
+        .map(|source| {
+            json!({
+                "kind": source.kind.as_str(),
+                "path": source.path,
+                "resolved": source.resolved().display().to_string(),
+                "label": source.label,
+                "exists": source.resolved().is_dir(),
+                "assets": report
+                    .assets
+                    .iter()
+                    .filter(|asset| asset.source == source.path)
+                    .count()
+            })
+        })
+        .collect();
+
+    let value = json!({
+        "status": status,
+        "healthy": healthy,
+        "version": env!("CARGO_PKG_VERSION"),
+        "protocol": LATEST_PROTOCOL,
+        "config": config_path.display().to_string(),
+        "sources_active": report.active_sources,
+        "sources_total": cfg.sources.len(),
+        "sources": sources,
+        "asset_total": report.assets.len(),
+        "assets": {
+            "skill": counts.get("skill").copied().unwrap_or(0),
+            "agent": counts.get("agent").copied().unwrap_or(0),
+            "command": counts.get("command").copied().unwrap_or(0),
+            "rule": counts.get("rule").copied().unwrap_or(0),
+            "snippet": counts.get("snippet").copied().unwrap_or(0)
+        },
+        "warnings": report.warnings
+    });
+    (value, healthy)
+}
+
+fn asset_count_summary(counts: &Value) -> String {
+    let summary = ["skill", "agent", "command", "rule", "snippet"]
+        .into_iter()
+        .filter_map(|kind| {
+            let count = counts[kind].as_u64().unwrap_or(0);
+            (count > 0).then(|| format!("{count} {kind}"))
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    if summary.is_empty() {
+        "none".into()
+    } else {
+        summary
+    }
+}
+
 fn write_message(out: &mut impl Write, message: &Value) -> Result<()> {
     let mut line = serde_json::to_vec(message)?;
     line.push(b'\n');
@@ -651,6 +762,16 @@ fn tools() -> Vec<Value> {
             "name": "list_sources",
             "title": "List sources",
             "description": "List the configured source roots, their kinds, and whether they exist.",
+            "inputSchema": {
+                "type": "object",
+                "additionalProperties": false
+            },
+            "annotations": { "readOnlyHint": true }
+        }),
+        json!({
+            "name": "server_health",
+            "title": "Server health",
+            "description": "Report server health: version, protocol, config path, source existence, per-source and per-kind asset counts, and scan warnings.",
             "inputSchema": {
                 "type": "object",
                 "additionalProperties": false
@@ -1003,6 +1124,46 @@ mod tests {
                 .unwrap()
                 .contains("Review code")
         );
+    }
+
+    #[test]
+    fn ping_and_health_tool_are_available() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut server = server(directory.path());
+
+        let pong = server
+            .handle(&json!({ "jsonrpc": "2.0", "id": 8, "method": "ping" }))
+            .unwrap();
+        assert_eq!(pong["result"], json!({}));
+
+        let tools = server
+            .handle(&json!({ "jsonrpc": "2.0", "id": 9, "method": "tools/list" }))
+            .unwrap();
+        let names: Vec<&str> = tools["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect();
+        assert!(names.contains(&"server_health"));
+
+        let health = call(&mut server, "server_health", json!({}));
+        assert_eq!(health["status"], "ok");
+        assert_eq!(health["healthy"], true);
+        assert_eq!(health["sources_active"], 1);
+        assert_eq!(health["assets"]["skill"], 0);
+    }
+
+    #[test]
+    fn health_is_unhealthy_without_source_directories() {
+        let cfg = Config {
+            sources: Vec::new(),
+            ..Config::default()
+        };
+        let (value, healthy) = health_value(&cfg, Path::new("/tmp/config.toml"));
+        assert!(!healthy);
+        assert_eq!(value["status"], "unhealthy");
+        assert_eq!(value["sources_total"], 0);
     }
 
     #[test]

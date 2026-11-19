@@ -286,6 +286,7 @@ arsenal install <URL|owner/repo> [--kind KIND] [--dest PATH] [--name NAME]
                 [--ref REF] [--subdir PATH] [--force]
 arsenal remove [NAME|PATH] [--kind KIND] [--purge]
 arsenal mcp
+arsenal mcp health [--json]
 arsenal uninstall
 arsenal sources list [--json]
 arsenal sources add <PATH> [--kind KIND]
@@ -349,6 +350,16 @@ Tools:
 | `delete_asset` | Move an asset to the trash, or `purge` it |
 | `install_asset` | Clone a GitHub/git asset into a configured root |
 | `list_sources` | Show configured roots, kinds, and existence |
+| `server_health` | Version, protocol, source status, asset counts, warnings |
+
+Health checks:
+
+- MCP `ping` returns an empty result while the server is accepting requests.
+- `arsenal mcp health` runs a one-shot preflight without starting the server.
+  It reports `ok`, `degraded` (scan warnings), or `unhealthy` (no source
+  directories exist), and exits non-zero only when unhealthy. Add `--json` for
+  monitoring.
+- The `server_health` tool returns the same report to an agent.
 
 Assets are also exposed as `file://` resources via `resources/list` and
 `resources/read`. Writes are restricted to assets found in configured source

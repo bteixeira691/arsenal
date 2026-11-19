@@ -95,7 +95,10 @@ enum Command {
         force: bool,
     },
     /// Serve assets to an AI agent over the Model Context Protocol (stdio)
-    Mcp,
+    Mcp {
+        #[command(subcommand)]
+        action: Option<McpAction>,
+    },
     /// Remove an installed asset (moves it to trash by default)
     Remove {
         /// Asset name or path; omit to choose interactively
@@ -150,6 +153,16 @@ enum SourcesAction {
         /// Restrict removal to one kind
         #[arg(long, value_name = "KIND")]
         kind: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum McpAction {
+    /// Check configuration and source roots without starting the server
+    Health {
+        /// Emit JSON for scripting
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -270,12 +283,20 @@ fn run(cli: Cli) -> Result<()> {
             };
             remove_asset(&cfg, asset.as_deref(), kind, purge)
         }
-        Some(Command::Mcp) => {
+        Some(Command::Mcp { action }) => {
             let (cfg, warnings) = load_config(&config_path, &cli.roots)?;
             for warning in warnings {
                 eprintln!("warning: {warning}");
             }
-            mcp::serve(cfg, config_path)
+            match action {
+                Some(McpAction::Health { json }) => {
+                    if !mcp::health(&cfg, &config_path, json)? {
+                        std::process::exit(1);
+                    }
+                    Ok(())
+                }
+                None => mcp::serve(cfg, config_path),
+            }
         }
         Some(Command::Uninstall) => uninstall_self(),
         None => {
